@@ -113,7 +113,7 @@ impl<'a> Clone for BitReader<'a> {
 impl<'a> std::fmt::Debug for BitReader<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BitReader")
-            .field("data", &self.data)
+            // .field("data", &self.data)
             .field("data.len", &self.data.len())
             .field("byte_pos", &self.byte_pos)
             .field("bit_pos", &self.bit_pos)

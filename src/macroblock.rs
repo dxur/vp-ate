@@ -4,9 +4,11 @@ use crate::{
     bit::{BitError, BitReader, BoolDecoder},
     frame::VP8FrameHeader,
     tables::KF_BMODE_PROB,
+    util::{idct4x4, iwht4x4, vp8_idct4x4, vp8_iwht4x4},
 };
 
-#[derive(Debug, PartialEq, Eq, FromRepr)]
+// TODO: make an enum for each plane
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 #[repr(i8)]
 pub enum IntraMBMode {
     DcPred, /* predict DC using row above and column to the left */
@@ -68,6 +70,20 @@ impl IntraBMode {
     pub const NUM_BMODES: usize = 10;
 }
 
+impl TryInto<IntraBMode> for IntraMBMode {
+    type Error = ();
+
+    fn try_into(self) -> std::result::Result<IntraBMode, Self::Error> {
+        match self {
+            IntraMBMode::DcPred => Ok(IntraBMode::BDcPred),
+            IntraMBMode::VPred => Ok(IntraBMode::BVePred),
+            IntraMBMode::HPred => Ok(IntraBMode::BHePred),
+            IntraMBMode::TmPred => Ok(IntraBMode::BTmPred),
+            IntraMBMode::BPred => Err(()),
+        }
+    }
+}
+
 #[rustfmt::skip]
 const BMODE_TREE: [i8; 2 * (IntraBMode::NUM_BMODES - 1)] = {
     use IntraBMode::*;
@@ -113,12 +129,12 @@ impl From<BitError> for MacroblockError {
 
 #[derive(Debug, Default)]
 pub struct MacroblockHeader {
-    mb_skip_coeff: bool,
-    is_inter_mb: bool,
-    mv_mode: Option<()>,
-    intra_y_mode: Option<IntraMBMode>,
-    sub_modes: Option<[[IntraBMode; 4]; 4]>,
-    intra_uv_mode: Option<IntraMBMode>,
+    pub mb_skip_coeff: bool,
+    pub is_inter_mb: bool,
+    pub mv_mode: Option<()>,
+    pub intra_y_mode: Option<IntraMBMode>,
+    pub sub_modes: Option<[[IntraBMode; 4]; 4]>,
+    pub intra_uv_mode: Option<IntraMBMode>,
 }
 
 impl MacroblockHeader {
@@ -169,39 +185,50 @@ impl MacroblockHeader {
                 .unwrap();
 
             // If BPred, decode 4x4 sub-modes using neighbour contexts from `blocks`
-            let sub_modes = if intra_y_mode == IntraMBMode::BPred {
-                let mut sub_modes = [[IntraBMode::BDcPred; 4]; 4];
+            let sub_modes =
+                if intra_y_mode == IntraMBMode::BPred {
+                    let mut sub_modes = [[IntraBMode::BDcPred; 4]; 4];
 
-                for y in 0..4 {
-                    for x in 0..4 {
-                        let above = if y > 0 {
-                            sub_modes[y - 1][x]
-                        } else {
-                            top.and_then(|t| blocks[t].header.sub_modes.as_ref().map(|m| m[3][x]))
+                    for y in 0..4 {
+                        for x in 0..4 {
+                            let above = if y > 0 {
+                                sub_modes[y - 1][x]
+                            } else {
+                                top.map(|t| {
+                                    let h = &blocks[t].header;
+                                    h.sub_modes.as_ref().map(|m| m[3][x]).unwrap_or_else(|| {
+                                        h.intra_y_mode.unwrap().try_into().unwrap()
+                                    })
+                                })
                                 .unwrap_or(IntraBMode::BDcPred)
-                        };
+                            };
 
-                        let left_ctx = if x > 0 {
-                            sub_modes[y][x - 1]
-                        } else {
-                            left.and_then(|l| blocks[l].header.sub_modes.as_ref().map(|m| m[y][3]))
+                            let left_ctx = if x > 0 {
+                                sub_modes[y][x - 1]
+                            } else {
+                                left.map(|l| {
+                                    let h = &blocks[l].header;
+                                    h.sub_modes.as_ref().map(|m| m[y][3]).unwrap_or_else(|| {
+                                        h.intra_y_mode.unwrap().try_into().unwrap()
+                                    })
+                                })
                                 .unwrap_or(IntraBMode::BDcPred)
-                        };
+                            };
 
-                        let prob_table = &KF_BMODE_PROB[above as usize][left_ctx as usize];
-                        let intra_b_mode = bd
-                            .read_treed(&BMODE_TREE, prob_table)
-                            .map(IntraBMode::from_repr)?
-                            .unwrap();
+                            let prob_table = &KF_BMODE_PROB[above as usize][left_ctx as usize];
+                            let intra_b_mode = bd
+                                .read_treed(&BMODE_TREE, prob_table)
+                                .map(IntraBMode::from_repr)?
+                                .unwrap();
 
-                        sub_modes[y][x] = intra_b_mode;
+                            sub_modes[y][x] = intra_b_mode;
+                        }
                     }
-                }
 
-                Some(sub_modes)
-            } else {
-                None
-            };
+                    Some(sub_modes)
+                } else {
+                    None
+                };
 
             let intra_uv_mode = bd
                 .read_treed(&UV_MODE_TREE, &KF_UV_MODE_PROB)
@@ -299,153 +326,65 @@ const COEFF_TREE_NOEOB: [i8; 2 * (Token::NUM_DCT_TOKENS - 2)] = {
 
 const ZIGZAG: [u8; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
 
-#[derive(Default)]
-pub struct HasCoeffMap {
-    y: Vec<Vec<[bool; 16]>>,
-    u: Vec<Vec<[bool; 4]>>,
-    v: Vec<Vec<[bool; 4]>>,
-    y2: Vec<Vec<bool>>,
-}
-
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Plane {
-    Y,
+    Y2,
+    Y(bool),
     U,
     V,
-    Y2,
 }
 
-impl HasCoeffMap {
-    pub fn new(mb_height: u16, mb_width: u16) -> Self {
-        let mb_height = mb_height as usize;
-        let mb_width = mb_width as usize;
-        Self {
-            y: vec![vec![[false; 16]; mb_width]; mb_height],
-            u: vec![vec![[false; 4]; mb_width]; mb_height],
-            v: vec![vec![[false; 4]; mb_width]; mb_height],
-            y2: vec![vec![false; mb_width]; mb_height],
+impl Plane {
+    pub fn first_coeff(&self) -> usize {
+        match self {
+            Plane::Y(true) => 1,
+            _ => 0,
         }
     }
-
-    pub fn get(&self, plane: Plane, row: usize, col: usize, block_idx: usize) -> bool {
-        match plane {
-            Plane::Y => self.y[row][col][block_idx],
-            Plane::Y2 => self.y2[row][col],
-            Plane::U => self.u[row][col][block_idx],
-            Plane::V => self.v[row][col][block_idx],
-        }
-    }
-
-    pub fn set(&mut self, plane: Plane, row: usize, col: usize, block_idx: usize, val: bool) {
-        match plane {
-            Plane::Y => self.y[row][col][block_idx] = val,
-            Plane::Y2 => self.y2[row][col] = val,
-            Plane::U => self.u[row][col][block_idx] = val,
-            Plane::V => self.v[row][col][block_idx] = val,
+    pub fn index(&self) -> usize {
+        match self {
+            Plane::Y(true) => 0,
+            Plane::Y2 => 1,
+            Plane::U => 2,
+            Plane::V => 2,
+            Plane::Y(false) => 3,
         }
     }
 }
 
-fn get_left_neighbor(
-    plane: Plane,
-    row: usize,
-    col: usize,
-    block: usize,
-) -> Option<(usize, usize, usize)> {
-    if plane == Plane::Y {
-        let bx = block % 4;
-        let by = block / 4;
-        if bx > 0 {
-            Some((row, col, block - 1))
-        } else if col > 0 {
-            Some((row, col - 1, by * 4 + 3))
+#[derive(Debug, Clone)]
+pub struct MayBeTokens<'a, const N: usize>(pub Option<&'a [Tokens; N]>);
+
+impl<'a, const N: usize> MayBeTokens<'a, N> {
+    pub fn slice<const M: usize>(&self, offset: usize) -> MayBeTokens<'a, M> {
+        if let Some(slice) = self.0 {
+            let subslice = &slice[offset..offset + M];
+            MayBeTokens(Some(subslice.try_into().unwrap()))
         } else {
-            None
+            MayBeTokens(None)
         }
-    } else if plane == Plane::U || plane == Plane::V {
-        if block % 2 == 1 {
-            Some((row, col, block - 1))
-        } else if col > 0 {
-            Some((row, col - 1, block + 1))
-        } else {
-            None
-        }
-    } else {
-        None
     }
 }
 
-fn get_above_neighbor(
-    plane: Plane,
-    row: usize,
-    col: usize,
-    block: usize,
-) -> Option<(usize, usize, usize)> {
-    if plane == Plane::Y {
-        let bx = block % 4;
-        let by = block / 4;
-        if by > 0 {
-            Some((row, col, block - 4))
-        } else if row > 0 {
-            Some((row - 1, col, 12 + bx))
-        } else {
-            None
-        }
-    } else if plane == Plane::U || plane == Plane::V {
-        if block < 2 {
-            if row > 0 {
-                Some((row - 1, col, block + 2))
-            } else {
-                None
-            }
-        } else {
-            Some((row, col, block - 2))
-        }
-    } else {
-        None
-    }
-}
+#[derive(Debug, Clone, Default)]
+pub struct Tokens(pub [i32; 16]);
 
-#[derive(Debug)]
-pub struct ResidualBlock([i32; 16]);
-
-impl ResidualBlock {
+impl Tokens {
     pub fn parse<'a, 'b>(
-        p: usize,
         plane: Plane,
-        mb_row: usize,
-        mb_col: usize,
-        block_idx: usize,
         coeff_probs: &[[[[u8; 11]; 3]; 8]; 4],
         dcq: i16,
         acq: i16,
-        has_coeff_map: &mut HasCoeffMap,
+        mut complexity: usize,
         bd: &mut BoolDecoder<'a, 'b>,
     ) -> Result<(Self, bool)> {
         let mut block = [0i32; 16];
         let mut has_coeff = false;
         let mut skip = false;
-        let mut ctx = 0;
 
-        if let Some((nb_row, nb_col, nb_idx)) = get_left_neighbor(plane, mb_row, mb_col, block_idx)
-        {
-            if has_coeff_map.get(plane, nb_row, nb_col, nb_idx) {
-                ctx += 1;
-            }
-        }
-
-        if let Some((nb_row, nb_col, nb_idx)) = get_above_neighbor(plane, mb_row, mb_col, block_idx)
-        {
-            if has_coeff_map.get(plane, nb_row, nb_col, nb_idx) {
-                ctx += 1;
-            }
-        }
-
-        let first_coeff = if p == 0 { 1 } else { 0 };
-
-        for i in first_coeff..16 {
+        for i in plane.first_coeff()..16 {
             let band = COEFF_BANDS[i];
-            let probs = &coeff_probs[p][band][ctx];
+            let probs = &coeff_probs[plane.index()][band][complexity];
 
             let token_repr = if skip {
                 bd.read_treed(&COEFF_TREE_NOEOB, &probs[1..])?
@@ -463,7 +402,7 @@ impl ResidualBlock {
                 Token::Dct0 => {
                     skip = true;
                     has_coeff = true;
-                    ctx = 0;
+                    complexity = 0;
                     continue;
                 }
                 Token::Dct1 => 1,
@@ -486,7 +425,7 @@ impl ResidualBlock {
             has_coeff = true;
             skip = false;
 
-            ctx = match abs_value {
+            complexity = match abs_value {
                 0 => 0,
                 1 => 1,
                 _ => 2,
@@ -501,8 +440,6 @@ impl ResidualBlock {
             block[zigzag as usize] = abs_value * if zigzag == 0 { dcq as i32 } else { acq as i32 };
         }
 
-        has_coeff_map.set(plane, mb_row, mb_col, block_idx, has_coeff);
-
         Ok((Self(block), has_coeff))
     }
 
@@ -515,19 +452,24 @@ impl ResidualBlock {
     }
 }
 
-#[derive(Debug)]
-pub struct Tokens(Vec<ResidualBlock>);
+#[derive(Debug, Clone)]
+pub struct Residuals {
+    pub luma: [Tokens; 16],
+    pub chroma: [[Tokens; 4]; 2],
+}
 
-impl Tokens {
+impl Residuals {
     fn parse<'a, 'b>(
-        (mb_row, mb_col, block): (u16, u16, &MacroblockHeader),
+        (_, mb_col, block): (u16, u16, &MacroblockHeader),
         frame: &VP8FrameHeader,
-        has_coeff_map: &mut HasCoeffMap,
+        has_coeff_vec: &mut Vec<(bool, [bool; 4], [[bool; 2]; 2])>,
         bd: &mut BoolDecoder<'a, 'b>,
     ) -> Result<Self> {
-        let mut residuals: Vec<ResidualBlock> = Vec::new();
-        let mut y2_has_coeff = false;
+        let mbx = mb_col as usize + 1; // the index of the top block [[left], [top0] ...]
 
+        let mut y2_has_coeff = false;
+        let mut luma_dc = None;
+        
         if (block.is_inter_mb && {
             #[allow(unreachable_code)]
             {
@@ -537,67 +479,106 @@ impl Tokens {
             && block
                 .intra_y_mode
                 .as_ref()
-                .map(|m| *m != IntraMBMode::BPred)
+                .map(|&m| m != IntraMBMode::BPred)
                 .unwrap_or(false))
         {
-            let (residual, has_coeff) = ResidualBlock::parse(
-                1,
+            let mut complexity = 0;
+            if has_coeff_vec[mbx].0 {
+                complexity += 1;
+            }
+            if has_coeff_vec[0].0 {
+                complexity += 1;
+            }
+            
+            let (mut residual, has_coeff) = Tokens::parse(
                 Plane::Y2,
-                mb_row as usize,
-                mb_col as usize,
-                0, // only 1 Y2 block
                 &frame.coeff_probs,
                 frame.y2dc,
                 frame.y2ac,
-                has_coeff_map,
+                complexity,
                 bd,
             )?;
-            residuals.push(residual);
-            y2_has_coeff = has_coeff;
-        }
-        for i in 0..16 {
-            let plane = if y2_has_coeff { 0 } else { 3 };
-            let (residual, _) = ResidualBlock::parse(
-                plane,
-                Plane::Y,
-                mb_row as usize,
-                mb_col as usize,
-                i,
-                &frame.coeff_probs,
-                frame.ydc,
-                frame.yac,
-                has_coeff_map,
-                bd,
-            )?;
-            residuals.push(residual);
+
+            iwht4x4(&mut residual.0);
+            luma_dc = Some(residual);
+            y2_has_coeff = true;// has_coeff; // Pin it to true
+            has_coeff_vec[mbx].0 = has_coeff;
+            has_coeff_vec[0].0 = has_coeff;
         }
 
-        for plane in [Plane::U, Plane::V] {
-            for i in 0..4 {
-                let (residual, _) = ResidualBlock::parse(
-                    2,
-                    plane,
-                    mb_row as usize,
-                    mb_col as usize,
-                    i,
+        let mut luma: [Tokens; 16] = std::array::from_fn(|_| Default::default());
+        for i in 0..4 {
+            let mut left = has_coeff_vec[0].1[i];
+            for j in 0..4 {
+                let mut complexity = 0;
+                if has_coeff_vec[mbx].1[j] {
+                    complexity += 1;
+                }
+                if left {
+                    complexity += 1;
+                }
+
+                let (mut residual, has_coeff) = Tokens::parse(
+                    Plane::Y(y2_has_coeff),
                     &frame.coeff_probs,
-                    frame.uvdc,
-                    frame.uvac,
-                    has_coeff_map,
+                    frame.ydc,
+                    frame.yac,
+                    complexity,
                     bd,
                 )?;
-                residuals.push(residual);
+                if let Some(ref luma_dc) = luma_dc {
+                    residual.0[0] = luma_dc.0[i * 4 + j];
+                }
+                idct4x4(&mut residual.0);
+                luma[i * 4 + j] = residual;
+                has_coeff_vec[mbx].1[j] = has_coeff;
+                left = has_coeff;
+            }
+            has_coeff_vec[0].1[i] = left;
+        }
+
+        let mut chroma: [[Tokens; 4]; 2] = std::array::from_fn(|_| Default::default());
+        for (p, plane) in [Plane::U, Plane::V].into_iter().enumerate() {
+            for i in 0..2 {
+                let mut left = has_coeff_vec[0].2[p][i];
+                for j in 0..2 {
+                    let mut complexity = 0;
+                    if has_coeff_vec[mbx].2[p][j] {
+                        complexity += 1;
+                    }
+                    if left {
+                        complexity += 1;
+                    }
+
+                    let (mut residual, has_coeff) = Tokens::parse(
+                        plane,
+                        &frame.coeff_probs,
+                        frame.uvdc,
+                        frame.uvac,
+                        complexity,
+                        bd,
+                    )?;
+                    idct4x4(&mut residual.0);
+                    chroma[p][i * 2 + j] = residual;
+                    has_coeff_vec[mbx].2[p][j] = has_coeff;
+                    left = has_coeff;
+                }
+                has_coeff_vec[0].2[p][i] = left;
             }
         }
 
-        Ok(Self(residuals))
+        Ok(Self { luma, chroma })
     }
 }
 
 #[derive(Debug)]
+pub struct Residue(pub Option<Residuals>);
+
+#[derive(Debug)]
 pub struct Macroblock {
-    header: MacroblockHeader,
-    residuals: Option<Tokens>,
+    pub pos: (u16, u16),
+    pub header: MacroblockHeader,
+    pub residue: Residue,
 }
 
 impl Macroblock {
@@ -611,26 +592,38 @@ impl Macroblock {
         }
 
         let mut blocks = Vec::new();
+        let mut has_coeff_vec = vec![(false, [false; 4], [[false; 2]; 2]); frame.mb_width as usize + 1];
         let mut residual_br = BitReader::new(residual_data);
         let mut residual_bd = BoolDecoder::new(&mut residual_br)?;
-        let mut has_coeff_map = HasCoeffMap::new(frame.mb_height, frame.mb_width);
 
         for i in 0..frame.mb_height {
             for j in 0..frame.mb_width {
                 let header = MacroblockHeader::parse(&mut blocks, frame, bd)?;
-                let residuals = if !header.mb_skip_coeff {
-                    Some(
-                        Tokens::parse((i, j, &header), frame, &mut has_coeff_map, &mut residual_bd)
-                            .inspect_err(|e| panic!("i: {i}, j: {j}, e: {e:?}"))?,
-                    )
+                let residue = if !header.mb_skip_coeff {
+                    let r =
+                        Residuals::parse((i, j, &header), frame, &mut has_coeff_vec, &mut residual_bd)
+                            .inspect_err(|e| panic!("i: {i}, j: {j}, e: {e:?}"))?;
+                    Residue(Some(r))
                 } else {
-                    None
+                    if let Some(IntraMBMode::BPred) = header.intra_y_mode {
+                        has_coeff_vec[0].1 = Default::default();
+                        has_coeff_vec[0].2 = Default::default();
+                        has_coeff_vec[j as usize + 1].1 = Default::default();
+                        has_coeff_vec[j as usize + 1].2 = Default::default();
+                    } else {
+                        has_coeff_vec[0] = Default::default();
+                        has_coeff_vec[j as usize + 1] = Default::default();
+                    }
+                    Residue(None)
                 };
-                // println!("Header: {header:?}\nResiduals: {residuals:?}");
-                blocks.push(Macroblock { header, residuals });
+                blocks.push(Macroblock {
+                    pos: (j, i),
+                    header,
+                    residue,
+                });
             }
+            has_coeff_vec[0] = Default::default();
         }
-        // println!("BD: {residual_bd:?}");
         Ok(blocks)
     }
 }
