@@ -1,3 +1,14 @@
+//! Intra-prediction routines for VP8 video coding.
+//!
+//! This module implements various intra-prediction modes used to predict pixel values
+//! within a block based on previously decoded neighboring pixels from the top, left,
+//! and top-left directions. These techniques are essential for reducing spatial
+//! redundancy in formats such as VP8.
+//!
+//! The functions are generic over the block size `N` (typically 4, 8, or 16) and
+//! handle edge cases where neighbors might not be available (e.g., at the frame
+//! boundaries) by using default values or adjusting the prediction logic.
+
 pub fn predict_dcpred<const N: usize>(
     top: &Option<[u8; N]>,
     left: &Option<[u8; N]>,
@@ -5,7 +16,7 @@ pub fn predict_dcpred<const N: usize>(
     let mut shf = match N {
         8 => 3,
         16 => 4,
-        _ => unreachable!()
+        _ => unreachable!(),
     };
 
     let sum: i32 = match (top, left) {
@@ -15,20 +26,15 @@ pub fn predict_dcpred<const N: usize>(
             let sum_left: i32 = l.iter().map(|&v| v as i32).sum();
             sum_top + sum_left
         }
-        (Some(t), None) => {
-            t.iter().map(|&v| v as i32).sum()
-        }
-        (None, Some(l)) => {
-            l.iter().map(|&v| v as i32).sum()
-        }
+        (Some(t), None) => t.iter().map(|&v| v as i32).sum(),
+        (None, Some(l)) => l.iter().map(|&v| v as i32).sum(),
         (None, None) => return [[128u8; N]; N],
     };
 
     // int sum;  /* sum of 8 or 16 pixels at (at least) 16-bit precision */
     // int shf;  /* base 2 logarithm of the number of pixels (3 or 4) */
-
     // Pixel DCvalue = (sum + (1 << (shf-1))) >> shf;
-    let dcval = (sum + (1 << (shf-1))) >> shf;
+    let dcval = (sum + (1 << (shf - 1))) >> shf;
 
     [[dcval as u8; N]; N]
 }
@@ -40,7 +46,9 @@ pub fn predict_tmpred<const N: usize>(
 ) -> [[u8; N]; N] {
     let a = top.as_ref().unwrap_or(&[127u8; N]);
     let l = left.as_ref().unwrap_or(&[129u8; N]);
-    let p = *top_left.as_ref().unwrap_or(if top.is_none() { &127u8 } else { &129u8 });
+    let p = *top_left
+        .as_ref()
+        .unwrap_or(if top.is_none() { &127u8 } else { &129u8 });
 
     let mut out = [[0u8; N]; N];
     for y in 0..N {
@@ -87,10 +95,7 @@ fn clamp255(val: i32) -> u8 {
     val.clamp(0, 255) as u8
 }
 
-pub fn predict_dcpred_avg(
-    top: &Option<[u8; 4]>,
-    left: &Option<[u8; 4]>,
-) -> [[u8; 4]; 4] {
+pub fn predict_dcpred_avg(top: &Option<[u8; 4]>, left: &Option<[u8; 4]>) -> [[u8; 4]; 4] {
     let a = top.unwrap_or([127; 4]);
     let l = left.unwrap_or([129; 4]);
 
@@ -139,10 +144,7 @@ pub fn predict_vpred_avg(
 
 // B_HE_PRED: Horizontal prediction with averaging
 // All 4 columns = smoothed left column
-pub fn predict_hpred_avg(
-    left: &Option<[u8; 4]>,
-    top_left: &Option<u8>,
-) -> [[u8; 4]; 4] {
+pub fn predict_hpred_avg(left: &Option<[u8; 4]>, top_left: &Option<u8>) -> [[u8; 4]; 4] {
     let l = left.unwrap_or([129; 4]);
     let p = top_left.unwrap_or(127);
     let mut result = [[0; 4]; 4];
@@ -164,11 +166,7 @@ pub fn predict_hpred_avg(
     result
 }
 
-
-pub fn predict_bldpred(
-    top: &Option<[u8; 4]>,
-    top_right: &Option<[u8; 4]>,
-) -> [[u8; 4]; 4] {
+pub fn predict_bldpred(top: &Option<[u8; 4]>, top_right: &Option<[u8; 4]>) -> [[u8; 4]; 4] {
     let a = top.unwrap_or([127; 4]);
     let mut a_ext = [0u8; 8];
     a_ext[0..4].copy_from_slice(&a);
@@ -282,10 +280,7 @@ pub fn predict_bvrpred(
     result
 }
 
-pub fn predict_bvlpred(
-    top: &Option<[u8; 4]>,
-    top_right: &Option<[u8; 4]>,
-) -> [[u8; 4]; 4] {
+pub fn predict_bvlpred(top: &Option<[u8; 4]>, top_right: &Option<[u8; 4]>) -> [[u8; 4]; 4] {
     let a = top.unwrap_or([127; 4]);
 
     let mut a_ext = [0u8; 8];

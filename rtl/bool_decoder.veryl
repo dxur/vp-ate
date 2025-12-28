@@ -1,0 +1,161 @@
+interface BoolDecoderIf {
+    var ready     : bool    ;
+    var valid     : bool    ;
+    var prob      : logic<8>;
+    var data_ready: bool    ;
+    var data_valid: bool    ;
+    var data      : logic   ;
+
+    modport self {
+        ready     : output,
+        valid     : input ,
+        prob      : input ,
+        data_ready: input ,
+        data_valid: output,
+        data      : output,
+    }
+
+    modport user {
+        ready     : input ,
+        valid     : output,
+        prob      : output,
+        data_ready: output,
+        data_valid: input ,
+        data      : input ,
+    }
+}
+
+#[expand(modport)]
+module BoolDecoder (
+    clk: input clock,
+    rst: input reset,
+
+    mem_ready     : input  bool,
+    mem_valid     : output bool,
+    mem_data_valid: input  bool,
+    mem_data_ready: output bool,
+    mem_data      : input  u8  ,
+
+    self: modport BoolDecoderIf::self,
+) {
+    var value    : logic<32>;
+    var range    : logic<32>;
+    var bit_count: logic<4> ;
+    var init     : logic<2> ;
+
+    #[enum_encoding(onehot)]
+    enum State {
+        init,
+        idle,
+        check_range,
+        wait_byte,
+        compute_bool,
+    }
+    var state: State;
+
+    let split        : logic<32> = 1 + (((range - 1) * self.prob) >> 8);
+    let split_shifted: logic<32> = split << 8;
+
+    always_ff {
+        if_reset {
+            state     = State::init;
+            value     = 0;
+            range     = 255;
+            bit_count = 0;
+            init      = 0;
+        } else {
+            case state {
+                default    : state = State::init;
+                State::init: {
+                    range = 255;
+                    if init == 2 {
+                        state = State::idle;
+                    } else if mem_data_valid {
+                        value[7:0] = mem_data;
+                        init       = init + 1;
+                    }
+                }
+
+                State::idle: {
+                    if self.valid {
+                        state = State::check_range;
+                    }
+                }
+
+                State::check_range: {
+                    if range >= 128 {
+                        state = State::compute_bool;
+                    } else {
+                        if bit_count == 8 {
+                            bit_count = 0;
+                            if mem_ready {
+                                state = State::wait_byte;
+                            }
+                        } else {
+                            value     = value << 1;
+                            range     = range << 1;
+                            bit_count = bit_count + 1;
+                        }
+                    }
+                }
+
+                State::wait_byte: {
+                    if mem_data_valid {
+                        value[7:0] = mem_data;
+                        state      = State::check_range;
+                    }
+                }
+
+                State::compute_bool: {
+                    if self.data_ready {
+                        if value >= split_shifted {
+                            range = range - split;
+                            value = value - split_shifted;
+                        } else {
+                            range = split;
+                        }
+                        state = State::idle;
+                    }
+                }
+            }
+        }
+    }
+
+    always_comb {
+        mem_valid       = false;
+        mem_data_ready  = false;
+        self.data_valid = false;
+        self.ready      = false;
+        self.data       = 0;
+
+        case state {
+            default    : {}
+            State::init: {
+                if init != 2 {
+                    mem_valid      = true;
+                    mem_data_ready = true;
+                }
+            }
+            State::idle: {
+                self.ready = true;
+            }
+            State::check_range: {
+                if range <: 128 && bit_count == 8 {
+                    mem_valid = true;
+                }
+            }
+            State::wait_byte: {
+                mem_data_ready = true;
+            }
+            State::compute_bool: {
+                self.data_valid = true;
+                if value <: split_shifted {
+                    self.data = 1;
+                }
+            }
+        }
+    }
+}
+
+#[test(test_bool_decoder, BoolDecoder)]
+include (cocotb, "test/bool_decoder.py");

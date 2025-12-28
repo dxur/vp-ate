@@ -1,16 +1,29 @@
+//! Utility functions for VP8 decoding.
+//!
+//! This module provides:
+//! - Inverse transforms (IDCT and IWHT) for reconstructing pixel data
+//! - Color space conversion (YUV to RGB)
+//! - Debug utilities for visualization
+
 use std::io::{self, Write};
 
+/// Dumps a 2D image array to a PGM file for debugging.
+///
+/// Creates a grayscale PGM (Portable GrayMap) file at `./debug.pgm`.
 pub fn dump<const W: usize, const H: usize>(img: &[[u8; W]; H]) {
     let mut f = std::fs::File::create("./debug.pgm").unwrap();
-    writeln!(f,"P2\n{W} {H}\n255").unwrap();
+    writeln!(f, "P2\n{W} {H}\n255").unwrap();
     for r in img {
         for p in r {
-            write!(f,"{p:>3} ").unwrap();
+            write!(f, "{p:>3} ").unwrap();
         }
         writeln!(f).unwrap();
     }
 }
 
+/// Writes VP8 frame data to a WebP file.
+///
+/// Wraps the raw VP8 bitstream in a WebP RIFF container.
 pub fn write_to_wepb(file: &str, data: &[u8]) -> io::Result<()> {
     let data_size = data.len() as u32;
     let riff_size = 4 + 4 + 4 + 4 + 4 + data_size;
@@ -28,6 +41,14 @@ pub fn write_to_wepb(file: &str, data: &[u8]) -> io::Result<()> {
     out.write_all(&webp_data)
 }
 
+/// Draws a macroblock grid overlay on the frame buffer for debugging.
+///
+/// # Parameters
+///
+/// - `w`, `h`: Frame dimensions in pixels
+/// - `gw`, `gh`: Grid cell dimensions (typically 16x16 for macroblocks)
+/// - `c`: Color value to use for grid lines (in packed 32-bit format)
+/// - `buffer`: Frame buffer to draw into
 pub fn draw_mb_grid(w: usize, h: usize, gw: usize, gh: usize, c: u32, buffer: &mut Vec<u32>) {
     let mb_cols = w / gw;
     let mb_rows = h / gh;
@@ -59,6 +80,12 @@ pub fn draw_mb_grid(w: usize, h: usize, gw: usize, gh: usize, c: u32, buffer: &m
     }
 }
 
+/// Converts a YUV pixel to RGB in-place.
+///
+/// The pixel is stored in a packed 32-bit format: `0x00YYUUVV` (input)
+/// becomes `0xAARRGGBB` (output).
+///
+/// Uses the ITU-R BT.601 conversion matrix.
 pub fn yuv2rgb(pix: &mut u32) {
     let y = ((*pix >> 16) & 0xFF) as i32;
     let u = ((*pix >> 8) & 0xFF) as i32;
@@ -78,10 +105,14 @@ pub fn yuv2rgb(pix: &mut u32) {
     *pix = (0xFF << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
 }
 
+/// Packs three 8-bit color components into a 32-bit value.
+///
+/// Format: `0x00AABBCC` where A, B, C are the three components.
 pub fn pack_color(a: u8, b: u8, c: u8) -> u32 {
     ((a as u32) << 16) | ((b as u32) << 8) | (c as u32)
 }
 
+/// Unpacks a 32-bit color value into three 8-bit components.
 pub fn unpack_color(p: u32) -> (u8, u8, u8) {
     let a = ((p >> 16) & 0xFF) as u8;
     let b = ((p >> 8) & 0xFF) as u8;
@@ -89,23 +120,39 @@ pub fn unpack_color(p: u32) -> (u8, u8, u8) {
     (a, b, c)
 }
 
+/// Extracts the first (most significant) color component.
 pub fn a_of(p: u32) -> u8 {
     ((p >> 16) & 0xFF) as u8
 }
+
+/// Extracts the second color component.
 pub fn b_of(p: u32) -> u8 {
     ((p >> 8) & 0xFF) as u8
 }
+
+/// Extracts the third (least significant) color component.
 pub fn c_of(p: u32) -> u8 {
     (p & 0xFF) as u8
 }
 
-/// 16 bit fixed point version of cos(PI/8) * sqrt(2) - 1
+/// 16-bit fixed-point constant: cos(π/8) × √2 - 1
 const CONST1: i64 = 20091;
-/// 16 bit fixed point version of sin(PI/8) * sqrt(2)
+
+/// 16-bit fixed-point constant: sin(π/8) × √2
 const CONST2: i64 = 35468;
 
-
-// inverse discrete cosine transform, used in decoding
+/// Performs inverse discrete cosine transform on a 4x4 block.
+///
+/// This is the reference implementation using 64-bit arithmetic to avoid overflow.
+/// The input block should contain 16 DCT coefficients in row-major order.
+///
+/// # Algorithm
+///
+/// Implements the 2D IDCT as two 1D transforms:
+/// 1. Transform each column (vertical)
+/// 2. Transform each row (horizontal)
+///
+/// The transform uses fixed-point arithmetic with 16-bit precision.
 pub fn idct4x4(block: &mut [i32]) {
     // The intermediate results may overflow the types, so we stretch the type.
     fn fetch(block: &[i32], idx: usize) -> i64 {
@@ -152,7 +199,16 @@ pub fn idct4x4(block: &mut [i32]) {
     }
 }
 
-// 14.3 inverse walsh-hadamard transform, used in decoding
+/// Performs inverse Walsh-Hadamard transform on a 4x4 block.
+///
+/// Used for the second-order DC coefficients in VP8 (Y2 blocks).
+/// The WHT is simpler than the DCT and doesn't require multiplication.
+///
+/// # Algorithm
+///
+/// Applies the WHT in two passes:
+/// 1. Transform each column
+/// 2. Transform each row
 pub fn iwht4x4(block: &mut [i32]) {
     // Perform one length check up front to avoid subsequent bounds checks in this function
     assert!(block.len() >= 16);
@@ -187,6 +243,10 @@ pub fn iwht4x4(block: &mut [i32]) {
     }
 }
 
+/// VP8-specific inverse Walsh-Hadamard transform for 4x4 blocks.
+///
+/// This is the production version used in the decoder. Operates on a fixed-size
+/// array for better performance.
 pub fn vp8_iwht4x4(input: &mut [i32; 16]) {
     let mut tmp = [0i32; 16];
 
@@ -217,28 +277,52 @@ pub fn vp8_iwht4x4(input: &mut [i32; 16]) {
     }
 }
 
+/// VP8-specific inverse DCT for 4x4 blocks.
+///
+/// This is the production version used in the decoder. Uses 32-bit arithmetic
+/// and operates on a fixed-size array.
+///
+/// # Algorithm
+///
+/// Implements the 2D IDCT as specified in the VP8 bitstream specification,
+/// using fixed-point arithmetic with rounding.
 pub fn vp8_idct4x4(block: &mut [i32; 16]) {
-    let mut tmp = [0i32; 16];
+    const CONST1: i32 = 20091;
+    const CONST2: i32 = 35468;
 
-    for i in 0..4 {
-        let a1 = block[i] + block[i + 8];
-        let b1 = block[i] - block[i + 8];
-        let t2 = (block[i + 4] >> 1) - block[i + 12];
-        let t3 = block[i + 4] + (block[i + 12] >> 1);
-        tmp[i] = a1 + t3;
-        tmp[i + 4] = b1 + t2;
-        tmp[i + 8] = b1 - t2;
-        tmp[i + 12] = a1 - t3;
+    for i in 0usize..4 {
+        let a1 = block[i] + block[8 + i];
+        let b1 = block[i] - block[8 + i];
+
+        let t1 = (block[4 + i] * CONST2) >> 16;
+        let t2 = block[12 + i] + ((block[12 + i] * CONST1) >> 16);
+        let c1 = t1 - t2;
+
+        let t1 = block[4 + i] + ((block[4 + i] * CONST1) >> 16);
+        let t2 = (block[12 + i] * CONST2) >> 16;
+        let d1 = t1 + t2;
+
+        block[i] = (a1 + d1) as i32;
+        block[4 + i] = (b1 + c1) as i32;
+        block[4 * 3 + i] = (a1 - d1) as i32;
+        block[4 * 2 + i] = (b1 - c1) as i32;
     }
 
-    for i in 0..4 {
-        let a1 = tmp[i * 4] + tmp[i * 4 + 2];
-        let b1 = tmp[i * 4] - tmp[i * 4 + 2];
-        let t2 = (tmp[i * 4 + 1] >> 1) - tmp[i * 4 + 3];
-        let t3 = tmp[i * 4 + 1] + (tmp[i * 4 + 3] >> 1);
-        block[i * 4] = (a1 + t3 + 4) >> 3;
-        block[i * 4 + 1] = (b1 + t2 + 4) >> 3;
-        block[i * 4 + 2] = (b1 - t2 + 4) >> 3;
-        block[i * 4 + 3] = (a1 - t3 + 4) >> 3;
+    for i in 0usize..4 {
+        let a1 = block[4 * i] + block[4 * i + 2];
+        let b1 = block[4 * i] - block[4 * i + 2];
+
+        let t1 = (block[4 * i + 1] * CONST2) >> 16;
+        let t2 = block[4 * i + 3] + ((block[4 * i + 3] * CONST1) >> 16);
+        let c1 = t1 - t2;
+
+        let t1 = block[4 * i + 1] + ((block[4 * i + 1] * CONST1) >> 16);
+        let t2 = (block[4 * i + 3] * CONST2) >> 16;
+        let d1 = t1 + t2;
+
+        block[4 * i] = ((a1 + d1 + 4) >> 3) as i32;
+        block[4 * i + 3] = ((a1 - d1 + 4) >> 3) as i32;
+        block[4 * i + 1] = ((b1 + c1 + 4) >> 3) as i32;
+        block[4 * i + 2] = ((b1 - c1 + 4) >> 3) as i32;
     }
 }

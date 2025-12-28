@@ -1,3 +1,15 @@
+//! VP8 video decoder demonstration application.
+//!
+//! This application reads an IVF file containing VP8-encoded video,
+//! decodes each frame, and displays them in a window using minifb.
+//!
+//! # Controls
+//!
+//! - **Space**: Pause/unpause playback
+//! - **Right Arrow**: Next frame (when paused)
+//! - **Left Arrow**: Previous frame (when paused)
+//! - **Escape**: Exit
+
 #![allow(dead_code)]
 mod bit;
 mod container;
@@ -6,9 +18,7 @@ mod frame;
 mod macroblock;
 mod prediction;
 mod tables;
-mod types;
 mod util;
-mod yuv;
 
 use std::cell::Cell;
 
@@ -17,14 +27,17 @@ use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use crate::bit::BitReader;
 use crate::container::IVFParser;
 use crate::frame::VP8Frame;
-use crate::util::write_to_wepb;
 
 thread_local! {
     static FRAME_COUNTER: Cell<usize> = Cell::new(0);
 }
 
+/// Entry point for the VP8 decoder application.
+///
+/// Reads `args[1]`, decodes VP8 frames, and displays them in a window.
+/// Supports basic playback controls for pausing and frame-by-frame navigation.
 fn main() {
-    let data = std::fs::read("samples/jellyfish.ivf").unwrap();
+    let data = std::fs::read(std::env::args().nth(1).unwrap()).unwrap();
     let mut parser = IVFParser::new(&data).unwrap();
 
     const WIDTH: usize = 1280;

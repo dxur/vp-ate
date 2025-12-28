@@ -1,7 +1,18 @@
+//! Bit-level reading and VP8 boolean arithmetic decoding.
+//!
+//! This module provides two main components:
+//! - [`BitReader`]: For reading individual bits and bytes from a byte slice
+//! - [`BoolDecoder`]: For decoding VP8's arithmetic-coded (boolean) bitstream
+//!
+//! VP8 uses arithmetic coding for most of its entropy-coded data, which allows
+//! for more efficient compression than simple bit-level encoding.
+
 use std::fmt;
 
+/// Errors that can occur during bit reading or boolean decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitError {
+    /// Attempted to read past the end of the input data.
     UnexpectedEOF,
 }
 
@@ -15,13 +26,33 @@ impl fmt::Display for BitError {
     }
 }
 
+/// A bit-level reader for reading individual bits from a byte slice.
+///
+/// `BitReader` maintains a position in both bytes and bits, allowing you to read
+/// data at bit granularity. Bits are read in MSB-first order within each byte.
+///
+/// # Examples
+///
+/// ```
+/// # use vp_ate::bit::BitReader;
+/// let data = &[0b10110011, 0b11001010];
+/// let mut reader = BitReader::new(data);
+/// assert_eq!(reader.read_bit().unwrap(), 1); // MSB of first byte
+/// assert_eq!(reader.read_bit().unwrap(), 0);
+/// ```
 pub struct BitReader<'a> {
+    /// The underlying byte slice being read from.
     pub data: &'a [u8],
+    /// Current byte position in the data.
     pub byte_pos: usize,
+    /// Current bit position within the current byte (0-7).
     pub bit_pos: u8,
 }
 
 impl<'a> BitReader<'a> {
+    /// Creates a new `BitReader` from the given byte slice.
+    ///
+    /// The reader starts at the beginning of the data (byte 0, bit 0).
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             data,
@@ -30,7 +61,15 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Read a single bit (as 0 or 1)
+    /// Reads a single bit from the stream.
+    ///
+    /// Bits are read in MSB-first order within each byte. After reading 8 bits,
+    /// the reader automatically advances to the next byte.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(0)` or `Ok(1)` on success, or `Err(BitError::UnexpectedEOF)`
+    /// if there are no more bits to read.
     pub fn read_bit(&mut self) -> Result<u8> {
         if self.byte_pos >= self.data.len() {
             return Err(BitError::UnexpectedEOF);
@@ -48,7 +87,14 @@ impl<'a> BitReader<'a> {
         Ok(bit)
     }
 
-    /// Read multiple bits (up to 32), returned as u32
+    /// Reads multiple bits and returns them as a `u32`.
+    ///
+    /// Reads `n` bits (up to 32) and assembles them into a single `u32` value,
+    /// with the first bit read becoming the MSB.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n > 32`.
     pub fn read_bits(&mut self, n: u8) -> Result<u32> {
         if n > 32 {
             panic!("Cannot read more than 32 bits at a time");
@@ -61,12 +107,18 @@ impl<'a> BitReader<'a> {
         Ok(value)
     }
 
-    /// Read a single bit and return as a boolean flag
+    /// Reads a single bit and returns it as a boolean.
+    ///
+    /// This is a convenience method that returns `true` for 1 and `false` for 0.
     pub fn read_flag(&mut self) -> Result<bool> {
         Ok(self.read_bit()? != 0)
     }
 
-    /// Align to next byte boundary
+    /// Aligns the reader to the next byte boundary.
+    ///
+    /// If the reader is not currently at a byte boundary (bit_pos != 0),
+    /// this advances to the start of the next byte, discarding any remaining
+    /// bits in the current byte.
     pub fn align_byte(&mut self) -> Result<()> {
         if self.bit_pos != 0 {
             self.bit_pos = 0;
@@ -78,13 +130,17 @@ impl<'a> BitReader<'a> {
         Ok(())
     }
 
-    /// Read next byte aligned byte
+    /// Reads a full byte from a byte-aligned position.
+    ///
+    /// This method first aligns to a byte boundary, then reads 8 bits.
     pub fn read_byte(&mut self) -> Result<u8> {
         self.align_byte()?;
         Ok(self.read_bits(8)? as u8)
     }
 
-    /// Return the next N untouched bytes and advance
+    /// Reads `N` bytes from a byte-aligned position.
+    ///
+    /// This method first aligns to a byte boundary, then reads `N` complete bytes.
     pub fn read_bytes<const N: usize>(&mut self) -> Result<[u8; N]> {
         self.align_byte()?;
         let mut buf = [0u8; N];
@@ -94,7 +150,9 @@ impl<'a> BitReader<'a> {
         Ok(buf)
     }
 
-    /// Check if end of input has been reached
+    /// Checks if the end of the input has been reached.
+    ///
+    /// Returns `true` if all bytes have been consumed.
     pub fn is_eof(&self) -> bool {
         self.byte_pos >= self.data.len()
     }
@@ -121,6 +179,23 @@ impl<'a> std::fmt::Debug for BitReader<'a> {
     }
 }
 
+/// A boolean arithmetic decoder for VP8's entropy-coded bitstream.
+///
+/// VP8 uses arithmetic coding (also called "boolean coding" in the spec) to compress
+/// most of its syntax elements. This is more efficient than simple bit-level encoding
+/// because it can encode symbols with non-power-of-2 probabilities.
+///
+/// The decoder maintains a range and a value, and decodes each boolean by comparing
+/// the value against a split point determined by the probability. This implementation
+/// follows the VP8 bitstream specification.
+///
+/// # Algorithm
+///
+/// For each boolean to decode:
+/// 1. Split the current range based on the probability (0-255)
+/// 2. Compare the value against the split point
+/// 3. Update range and value based on which half was chosen
+/// 4. Renormalize when range gets too small
 #[derive(Debug)]
 pub struct BoolDecoder<'a, 'b> {
     br: &'a mut BitReader<'b>,
@@ -130,7 +205,10 @@ pub struct BoolDecoder<'a, 'b> {
 }
 
 impl<'a, 'b> BoolDecoder<'a, 'b> {
-    /// Initialize a new boolean decoder from the given compressed partition
+    /// Initializes a new boolean decoder from a compressed data partition.
+    ///
+    /// The first two bytes of the partition are read to initialize the `value`.
+    /// The `range` starts at 255.
     pub fn new(br: &'a mut BitReader<'b>) -> Result<Self> {
         let mut value: u32 = 0;
 
@@ -146,12 +224,23 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
         })
     }
 
-    /// Read a single bool (bit) encoded with a probability of 128 (1/2)
+    /// Reads a boolean with 50/50 probability (probability = 128).
+    ///
+    /// This is a convenience method for reading a boolean that's equally likely
+    /// to be 0 or 1.
     pub fn read_flag(&mut self) -> Result<u8> {
         self.read_bool(128)
     }
 
-    /// Read a single bool (bit) encoded with a given probability (0–255)
+    /// Reads a boolean with a given probability.
+    ///
+    /// The `prob` parameter (0-255) represents the probability that the decoded
+    /// value is 0. A probability of 128 means 50/50, higher values mean 0 is more
+    /// likely, lower values mean 1 is more likely.
+    ///
+    /// This is the core arithmetic decoding operation. The range is split based on
+    /// the probability, and the value is compared against the split point to determine
+    /// which symbol was encoded.
     pub fn read_bool(&mut self, prob: u8) -> Result<u8> {
         let split = 1 + (((self.range - 1) * prob as u32) >> 8);
         let split_shifted = split << 8;
@@ -182,7 +271,10 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
         Ok(retval)
     }
 
-    /// Read a literal value of `num_bits` bits, each bit with probability 128 (1/2)
+    /// Reads a literal value of `num_bits` bits.
+    ///
+    /// Each bit is decoded with 50/50 probability. This is used for reading
+    /// fixed-length fields within the arithmetic-coded stream.
     pub fn read_literal(&mut self, num_bits: usize) -> Result<u32> {
         let mut v = 0;
         for _ in 0..num_bits {
@@ -191,7 +283,10 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
         Ok(v)
     }
 
-    /// Read a signed literal value of `num_bits` bits
+    /// Reads a signed literal value.
+    ///
+    /// The first bit indicates the sign (0 = positive, 1 = negative),
+    /// followed by `num_bits - 1` magnitude bits.
     pub fn read_signed_literal(&mut self, num_bits: usize) -> Result<i32> {
         if num_bits == 0 {
             return Ok(0);
@@ -207,7 +302,12 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
         Ok(if sign != 0 { -v } else { v })
     }
 
-    /// Read a tree coded value
+    /// Reads a value encoded using a binary tree.
+    ///
+    /// VP8 uses binary trees to encode symbols with varying probabilities.
+    /// The tree `t` defines the structure, and `p` provides the probability
+    /// for each decision node. Positive values in the tree are node indices,
+    /// negative values are leaf symbols (negated).
     pub fn read_treed(&mut self, t: &[i8], p: &[u8]) -> Result<i8> {
         let mut i = 0i8;
         loop {
@@ -219,5 +319,35 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
             }
         }
         Ok(-i)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use super::*;
+
+    #[test]
+    fn bool_decode_stdin() {
+        let mut stdin = std::io::stdin();
+
+        let mut n_buf = [0u8; 1];
+        stdin.read_exact(&mut n_buf).unwrap();
+        let n_props = n_buf[0] as usize;
+
+        let mut props = vec![0u8; n_props];
+        stdin.read_exact(&mut props).unwrap();
+
+        let mut data = Vec::new();
+        stdin.read_to_end(&mut data).unwrap();
+
+        let mut br = BitReader::new(&data);
+        let mut decoder = BoolDecoder::new(&mut br).unwrap();
+
+        for prop in props {
+            let b = decoder.read_bool(prop).unwrap();
+            print!("{}", b);
+        }
     }
 }

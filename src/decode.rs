@@ -1,7 +1,13 @@
+//! This module implements the VP8 decoding logic.
+//!
+//! It handles the reconstruction of video frames from macroblock data, including
+//! intra-prediction, token decoding, and color space conversion.
+//! The primary entry point is the `VP8Frame::decode` method.
+
 use crate::frame::VP8Frame;
 use crate::macroblock::{IntraBMode, IntraMBMode, Macroblock, MayBeTokens};
-use crate::{FRAME_COUNTER, prediction::*};
-use crate::util::{a_of, b_of, c_of, draw_mb_grid, dump, pack_color, yuv2rgb};
+use crate::prediction::*;
+use crate::util::{a_of, b_of, c_of, pack_color, yuv2rgb};
 
 impl VP8Frame {
     pub fn decode(self, buf: &mut Vec<u32>) -> (usize, usize) {
@@ -19,9 +25,6 @@ impl VP8Frame {
 
         for (i, row) in self.macroblocks.chunks(mbw).enumerate() {
             for (j, mb) in row.iter().enumerate() {
-                if i == 0 && j == 21 {
-                    let a = 1 + 1;
-                }
                 // FIXME: for non standard resulotion this will be wrong, I suppose!
                 Self::update_edges(
                     j,
@@ -116,11 +119,7 @@ impl VP8Frame {
         };
 
         *top_right = if (x + 1) * 16 + 4 >= w {
-            if y == 0 {
-                Some(None)
-            } else {
-                None
-            }
+            if y == 0 { Some(None) } else { None }
         } else if y == 0 {
             Some(None)
         } else {
@@ -194,7 +193,7 @@ impl Macroblock {
             &top_left.map(|v| v.0),
             top_right,
         );
-        
+
         // (luma, [[[128u8; 8]; 8]; 2])
 
         let chroma = self.predict_chroma(
@@ -275,7 +274,7 @@ impl Macroblock {
                 match top_right {
                     None => None,
                     Some(None) => Some([127; 4]),
-                    Some(v) =>  *v
+                    Some(v) => *v,
                 }
             } else {
                 if y == 0 {
@@ -340,7 +339,6 @@ impl Macroblock {
             IntraBMode::BVlPred => predict_bvlpred(top, top_right),
             IntraBMode::BHdPred => predict_bhdpred(top, left, top_left),
             IntraBMode::BHuPred => predict_bhupred(left),
-            _ => [[0; 4]; 4],
         }
     }
 

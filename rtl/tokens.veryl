@@ -1,0 +1,22 @@
+interface TokensParserIf {
+    modport self {
+
+
+    }
+
+    modport user {
+
+
+    }
+}
+
+module TokensParser (
+    clk: input clock,
+    rst: input reset,
+
+    bd: modport BoolDecoderIf::user,
+
+    self: modport TokensParserIf::self,
+) {
+    // Parse the bit stream
+}

@@ -1,0 +1,94 @@
+package Frame {
+    type CoeffProbs = u8 [11, 3, 8, 4];
+    struct FrameCtx {
+        valid    : bool,
+        part1_off: u64 ,
+        width    : u16 ,
+        height   : u16 ,
+        h_scale  : u8  ,
+        v_scale  : u8  ,
+        mb_width : u16 ,
+        mb_height: u16 ,
+
+        clamping: bool,
+
+        ydc : i16,
+        yac : i16,
+        y2dc: i16,
+        y2ac: i16,
+        uvdc: i16,
+        uvac: i16,
+
+        coeff_probs: CoeffProbs,
+
+        mb_no_skip_coeff: bool,
+        prob_skip_false : u8  ,
+    }
+
+    struct Macroblock {
+        valid : bool                                 ,
+        header: MacroblockHeaderPkg::MacroblockHeader,
+        tokens: bool                                 , // TODO
+    }
+}
+
+module FrameParser #(
+    param SlotsCount: u32 = 64        ,
+    param BufferSize: u64 = 100 * 1024,
+) (
+    clk: input clock,
+    rst: input reset,
+
+    stream_data_valid: input  bool,
+    stream_data_ready: output bool,
+    stream_data      : input  u8  ,
+
+    ctx        : output Frame::FrameCtx               ,
+    macroblocks: output Frame::Macroblock [SlotsCount],
+) {
+    // the ring buffer, contains both part0 and part1
+    var buffer     : u8  [BufferSize];
+    var index      : u64             ;
+    var part0_index: u64             ;
+    var part1_index: u64             ;
+
+    assign stream_data_ready = 1;
+
+    always_ff {
+        if_reset {
+            index       = 0;
+            part0_index = 0;
+            part1_index = 0;
+            buffer      = '{default: 0};
+            ctx         = '{default: 0};
+            // Do this on the parsing loop
+            ctx.coeff_probs = Tables::DEFAULT_COEFF_PROBS;
+            macroblocks     = '{default: 0};
+        } else {
+            if stream_data_valid {
+                buffer[index] = stream_data;
+                // Ring buffer behavior
+                // NOTE: this implicitly assume that part1_off is valid at this
+                // time and smaller than the `BufferSize`
+                // TODO: stream_data_ready to 0 when the parser still parsing
+                if index == BufferSize - 1 {
+                    index = ctx.part1_off;
+                } else {
+                    index += 1;
+                }
+            }
+
+            // First decode the framectx then decode macroblocks
+        }
+    }
+}
+
+module FrameParserTest (
+    clk: input clock,
+    rst: input reset,
+) {
+    // TODO: impl the test
+}
+
+#[test(test_frame_parser, FrameParserTest)]
+include (cocotb, "test/frame.py");

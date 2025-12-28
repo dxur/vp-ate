@@ -1,10 +1,16 @@
+//! This module implements the macroblock parsing logic.
+//!
+//! It handles the parsing of macroblocks from token data, including
+//! intra-prediction, token decoding, and color space conversion.
+//! The primary entry point is the `MacroblockHeader::parse` method.
+
 use strum::FromRepr;
 
 use crate::{
     bit::{BitError, BitReader, BoolDecoder},
     frame::VP8FrameHeader,
     tables::KF_BMODE_PROB,
-    util::{idct4x4, iwht4x4, vp8_idct4x4, vp8_iwht4x4},
+    util::{vp8_idct4x4, vp8_iwht4x4},
 };
 
 // TODO: make an enum for each plane
@@ -469,7 +475,7 @@ impl Residuals {
 
         let mut y2_has_coeff = false;
         let mut luma_dc = None;
-        
+
         if (block.is_inter_mb && {
             #[allow(unreachable_code)]
             {
@@ -489,7 +495,7 @@ impl Residuals {
             if has_coeff_vec[0].0 {
                 complexity += 1;
             }
-            
+
             let (mut residual, has_coeff) = Tokens::parse(
                 Plane::Y2,
                 &frame.coeff_probs,
@@ -499,9 +505,9 @@ impl Residuals {
                 bd,
             )?;
 
-            iwht4x4(&mut residual.0);
+            vp8_iwht4x4(&mut residual.0);
             luma_dc = Some(residual);
-            y2_has_coeff = true;// has_coeff; // Pin it to true
+            y2_has_coeff = true; // has_coeff; // Pin it to true
             has_coeff_vec[mbx].0 = has_coeff;
             has_coeff_vec[0].0 = has_coeff;
         }
@@ -529,7 +535,7 @@ impl Residuals {
                 if let Some(ref luma_dc) = luma_dc {
                     residual.0[0] = luma_dc.0[i * 4 + j];
                 }
-                idct4x4(&mut residual.0);
+                vp8_idct4x4(&mut residual.0);
                 luma[i * 4 + j] = residual;
                 has_coeff_vec[mbx].1[j] = has_coeff;
                 left = has_coeff;
@@ -558,7 +564,7 @@ impl Residuals {
                         complexity,
                         bd,
                     )?;
-                    idct4x4(&mut residual.0);
+                    vp8_idct4x4(&mut residual.0);
                     chroma[p][i * 2 + j] = residual;
                     has_coeff_vec[mbx].2[p][j] = has_coeff;
                     left = has_coeff;
@@ -592,7 +598,8 @@ impl Macroblock {
         }
 
         let mut blocks = Vec::new();
-        let mut has_coeff_vec = vec![(false, [false; 4], [[false; 2]; 2]); frame.mb_width as usize + 1];
+        let mut has_coeff_vec =
+            vec![(false, [false; 4], [[false; 2]; 2]); frame.mb_width as usize + 1];
         let mut residual_br = BitReader::new(residual_data);
         let mut residual_bd = BoolDecoder::new(&mut residual_br)?;
 
@@ -600,9 +607,13 @@ impl Macroblock {
             for j in 0..frame.mb_width {
                 let header = MacroblockHeader::parse(&mut blocks, frame, bd)?;
                 let residue = if !header.mb_skip_coeff {
-                    let r =
-                        Residuals::parse((i, j, &header), frame, &mut has_coeff_vec, &mut residual_bd)
-                            .inspect_err(|e| panic!("i: {i}, j: {j}, e: {e:?}"))?;
+                    let r = Residuals::parse(
+                        (i, j, &header),
+                        frame,
+                        &mut has_coeff_vec,
+                        &mut residual_bd,
+                    )
+                    .inspect_err(|e| panic!("i: {i}, j: {j}, e: {e:?}"))?;
                     Residue(Some(r))
                 } else {
                     if let Some(IntraMBMode::BPred) = header.intra_y_mode {

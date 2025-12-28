@@ -1,0 +1,12 @@
+[project]
+name = "vp_ate"
+version = "0.1.0"
+
+[build]
+target = { type = "directory", path = "target" }
+incremental = true
+
+[test]
+build = { type = "incremental", path = "sim" }
+waveform_format = "fst"
+waveform_target = { type = "directory", path = "sim/waves" }

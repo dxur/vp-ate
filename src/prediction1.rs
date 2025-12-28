@@ -104,10 +104,7 @@ pub fn predict_vpred_avg(
 
 // B_HE_PRED: Horizontal prediction with averaging
 // All 4 columns = smoothed left column
-pub fn predict_hpred_avg(
-    left: &Option<[u8; 4]>,
-    top_left: &Option<u8>,
-) -> [[u8; 4]; 4] {
+pub fn predict_hpred_avg(left: &Option<[u8; 4]>, top_left: &Option<u8>) -> [[u8; 4]; 4] {
     let l = left.unwrap_or([129; 4]);
     let p = top_left.unwrap_or(127);
     let mut result = [[0; 4]; 4];
@@ -129,11 +126,7 @@ pub fn predict_hpred_avg(
     result
 }
 
-
-pub fn predict_bldpred(
-    top: &Option<[u8; 4]>,
-    top_right: &Option<[u8; 4]>,
-) -> [[u8; 4]; 4] {
+pub fn predict_bldpred(top: &Option<[u8; 4]>, top_right: &Option<[u8; 4]>) -> [[u8; 4]; 4] {
     let a = top.unwrap_or([127; 4]);
     let mut a_ext = [0u8; 8];
     a_ext[0..4].copy_from_slice(&a);
@@ -247,10 +240,7 @@ pub fn predict_bvrpred(
     result
 }
 
-pub fn predict_bvlpred(
-    top: &Option<[u8; 4]>,
-    top_right: &Option<[u8; 4]>,
-) -> [[u8; 4]; 4] {
+pub fn predict_bvlpred(top: &Option<[u8; 4]>, top_right: &Option<[u8; 4]>) -> [[u8; 4]; 4] {
     let a = top.unwrap_or([127; 4]);
 
     let mut a_ext = [0u8; 8];

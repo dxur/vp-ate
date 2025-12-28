@@ -1,3 +1,15 @@
+//! VP8 frame header parsing and structure.
+//!
+//! This module defines the VP8 frame format and provides parsing logic for
+//! frame headers. A VP8 frame consists of:
+//! - Frame tag (3 bytes) with frame type, version, and size info
+//! - Frame header with quantization, loop filter, and probability data
+//! - Partition data containing macroblocks
+//!
+//! VP8 supports two frame types:
+//! - **Keyframes**: Self-contained, use default probabilities
+//! - **Inter-frames**: Reference previous frames (not yet implemented)
+
 use strum::Display;
 
 use crate::{
@@ -6,9 +18,12 @@ use crate::{
     tables::{AC_QUANT, COEFF_UPDATE_PROBS, DC_QUANT, DEFAULT_COEFF_PROBS},
 };
 
+/// Errors that can occur during VP8 frame parsing.
 #[derive(Debug, Display)]
 pub enum VP8FrameError {
+    /// Frame data is shorter than expected.
     FrameTooShort,
+    /// Invalid frame start code (expected 0x9D 0x01 0x2A for keyframes).
     InvalidStartCode,
 }
 
@@ -21,7 +36,17 @@ impl From<MacroblockError> for VP8FrameError {
 const MAX_REF_LF_DELTAS: usize = 4;
 const MAX_MODE_LF_DELTAS: usize = 4;
 
-#[derive(Debug)]
+/// VP8 frame header containing all frame-level parameters.
+///
+/// This structure holds all the metadata needed to decode a VP8 frame,
+/// including quantization parameters, loop filter settings, and probability
+/// tables for entropy decoding.
+///
+/// # Frame Types
+///
+/// - **Keyframe** (`is_key = true`): Independent frame with default probabilities
+/// - **Inter-frame** (`is_key = false`): References previous frames (not implemented)
+#[derive(Debug, Clone)]
 pub struct VP8FrameHeader {
     // Basic frame info
     pub is_key: bool,
@@ -78,16 +103,51 @@ pub struct VP8FrameHeader {
 
     // Remaining data
     pub mb_no_skip_coeff: bool,
+    /// Probability that a macroblock has no coded coefficients.
     pub prob_skip_false: Option<u8>,
 }
 
+/// A complete VP8 frame with header and macroblock data.
+///
+/// Represents a decoded VP8 frame structure ready for rendering.
+/// The frame can be converted to RGB pixel data using the `decode` method.
 #[derive(Debug)]
 pub struct VP8Frame {
+    /// Frame header with all decoding parameters.
     pub header: VP8FrameHeader,
+    /// Macroblocks containing the compressed image data.
     pub macroblocks: Vec<Macroblock>,
 }
 
 impl VP8Frame {
+    /// Parses a VP8 frame from a bitstream.
+    ///
+    /// This reads the frame tag, parses the frame header, and decodes all macroblocks.
+    ///
+    /// # Frame Format
+    ///
+    /// 1. **Frame tag** (3 bytes):
+    ///    - Bit 0: Frame type (0=keyframe, 1=inter)
+    ///    - Bits 1-3: Version
+    ///    - Bit 4: Show frame flag
+    ///    - Bits 5-23: First partition size
+    ///
+    /// 2. **Keyframe start code** (3 bytes, keyframes only): 0x9D 0x01 0x2A
+    ///
+    /// 3. **Frame dimensions** (keyframes only)
+    ///
+    /// 4. **Frame header**: Quantization, loop filter, probabilities
+    ///
+    /// 5. **Partition 0**: Macroblock prediction modes and metadata
+    ///
+    /// 6. **Residual partitions**: DCT coefficients
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The bitstream is too short
+    /// - The keyframe start code is invalid
+    /// - Macroblock parsing fails
     pub fn parse<'a, 'b>(br: &'a mut BitReader<'b>) -> Result<Self, VP8FrameError> {
         let b0 = br.read_byte()?;
         let b1 = br.read_byte()?;

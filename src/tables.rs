@@ -1,6 +1,28 @@
+//! VP8 lookup tables and probability constants.
+//!
+//! This module contains the static probability tables and quantization tables
+//! used by the VP8 decoder. These tables are defined in the VP8 bitstream specification.
+//!
+//! # Contents
+//!
+//! - Coefficient probability tables for entropy decoding
+//! - Block mode probability tables for keyframes
+//! - Quantization tables for DC and AC coefficients
+
 use crate::macroblock::IntraBMode;
 
+/// Number of DCT token types in VP8.
 pub const NUM_DCT_TOKENS: usize = 12;
+/// Probabilities for updating coefficient probabilities.
+///
+/// This 4D table is indexed as `[block_type][band][context][token]`:
+/// - `block_type`: 0=Y (with Y2), 1=Y2, 2=UV, 3=Y (no Y2)
+/// - `band`: Frequency band (0-7)
+/// - `context`: Neighboring coefficient context (0-2)
+/// - `token`: DCT token probability (11 values)
+///
+/// These probabilities control when the decoder should update its coefficient
+/// probability tables based on values read from the bitstream.
 pub const COEFF_UPDATE_PROBS: [[[[u8; NUM_DCT_TOKENS - 1]; 3]; 8]; 4] = [
     [
         [
@@ -172,6 +194,16 @@ pub const COEFF_UPDATE_PROBS: [[[[u8; NUM_DCT_TOKENS - 1]; 3]; 8]; 4] = [
     ],
 ];
 
+/// Default coefficient probabilities for entropy decoding.
+///
+/// This 4D table has the same structure as [`COEFF_UPDATE_PROBS`]:
+/// `[block_type][band][context][token]`.
+///
+/// These are the initial probability values used when decoding DCT coefficients.
+/// They can be updated on a per-frame basis using the update probabilities.
+///
+/// The probabilities are used with the arithmetic decoder to decode the
+/// sequence of tokens that represent the quantized DCT coefficients.
 pub const DEFAULT_COEFF_PROBS: [[[[u8; NUM_DCT_TOKENS - 1]; 3]; 8]; 4] = [
     [
         [
@@ -343,6 +375,16 @@ pub const DEFAULT_COEFF_PROBS: [[[[u8; NUM_DCT_TOKENS - 1]; 3]; 8]; 4] = [
     ],
 ];
 
+/// Keyframe block mode probabilities.
+///
+/// This 3D table is indexed as `[above_mode][left_mode][mode_prob]`.
+///
+/// In VP8 keyframes, the prediction mode for each 4x4 luma sub-block is
+/// encoded using probabilities that depend on the modes of the neighboring
+/// blocks above and to the left. This table provides those context-dependent
+/// probabilities.
+///
+/// There are 10 possible intra prediction modes for 4x4 blocks (see [`IntraBMode`]).
 pub const KF_BMODE_PROB: [[[u8; IntraBMode::NUM_BMODES - 1]; IntraBMode::NUM_BMODES];
     IntraBMode::NUM_BMODES] = [
     [
@@ -467,6 +509,10 @@ pub const KF_BMODE_PROB: [[[u8; IntraBMode::NUM_BMODES - 1]; IntraBMode::NUM_BMO
     ],
 ];
 
+/// DC quantization table.
+///
+/// Maps quantization index (0-127) to DC quantization value.
+/// Used to dequantize DC coefficients during decoding.
 #[rustfmt::skip]
 pub const DC_QUANT: [i16; 128] = [
       4,   5,   6,   7,   8,   9,  10,  10,
@@ -487,6 +533,13 @@ pub const DC_QUANT: [i16; 128] = [
     138, 140, 143, 145, 148, 151, 154, 157,
 ];
 
+/// AC quantization table.
+///
+/// Maps quantization index (0-127) to AC quantization value.
+/// Used to dequantize AC coefficients during decoding.
+///
+/// The quantization index can be adjusted per-frame using delta values,
+/// allowing fine control over compression quality.
 #[rustfmt::skip]
 pub const AC_QUANT: [i16; 128] = [
       4,   5,   6,   7,   8,    9,  10,  11,
