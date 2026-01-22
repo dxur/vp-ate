@@ -1,12 +1,11 @@
 interface TokensParserIf {
+    var placeholder: bool;
     modport self {
-
-
+        placeholder: output,
     }
 
     modport user {
-
-
+        placeholder: input,
     }
 }
 

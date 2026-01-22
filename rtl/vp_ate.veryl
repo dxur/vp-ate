@@ -1,0 +1,56 @@
+import MacroblockHeaderPkg::*;
+
+module VpAte #(
+    param BUFFER_SIZE: u32 = 64 * 1024,
+    param MB_SLOTS   : u32 = 16       ,
+    param TK_SLOT    : u32 = 32       ,
+) (
+    clk       : input  clock,
+    rst       : input  reset,
+    data      : input  u8   ,
+    data_valid: input  bool ,
+    data_ready: output bool ,
+    // frame buffer output ??
+) {
+    var buffer    : u8  [BUFFER_SIZE];
+    var buffer_ptr: u32              ;
+
+    var mb_slots    : MacroblockHeaderPkg::MacroblockHeader [MB_SLOTS];
+    var mb_slots_ptr: u32                                             ;
+    var tokens      : TokensPkg::Tokens                     [TK_SLOT] ;
+    var tokens_ptr  : u32                                             ;
+
+    always_ff {
+        if (rst) {
+            buffer_ptr = 32'b0;
+        } else {
+            if (data_valid) {
+                buffer[buffer_ptr] = data;
+                buffer_ptr         = buffer_ptr + 1;
+            }
+        }
+    }
+
+    always_comb {
+        data_ready = 'b1;
+    }
+}
+
+module VpAteTest (
+    clk       : input  clock,
+    rst       : input  reset,
+    data      : input  u8   ,
+    data_valid: input  bool ,
+    data_ready: output bool ,
+) {
+    inst decoder: VpAte (
+        clk         ,
+        rst         ,
+        data        ,
+        data_valid  ,
+        data_ready  ,
+    );
+}
+
+#[test(test_vp_ate, VpAteTest)]
+include (cocotb, "test/vp_ate.py");

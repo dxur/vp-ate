@@ -20,7 +20,7 @@ package MacroblockHeaderPkg {
         BHuPred, /* ENE (horizontal up) "" */
     }
 
-    type SubModes = IntraBMode [4, 4];
+    type SubModes = IntraBMode<4, 4>;
 
     struct MacroblockHeader {
         valid        : bool       ,

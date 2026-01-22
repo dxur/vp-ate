@@ -1,5 +1,6 @@
 package Frame {
-    type CoeffProbs = u8 [11, 3, 8, 4];
+    type Prob       = u8               ;
+    type CoeffProbs = Prob<4, 8, 3, 11>;
     struct FrameCtx {
         valid    : bool,
         part1_off: u64 ,
@@ -9,15 +10,12 @@ package Frame {
         v_scale  : u8  ,
         mb_width : u16 ,
         mb_height: u16 ,
-
-        clamping: bool,
-
-        ydc : i16,
-        yac : i16,
-        y2dc: i16,
-        y2ac: i16,
-        uvdc: i16,
-        uvac: i16,
+        ydc      : i16 ,
+        yac      : i16 ,
+        y2dc     : i16 ,
+        y2ac     : i16 ,
+        uvdc     : i16 ,
+        uvac     : i16 ,
 
         coeff_probs: CoeffProbs,
 
@@ -33,8 +31,8 @@ package Frame {
 }
 
 module FrameParser #(
-    param SlotsCount: u32 = 64        ,
-    param BufferSize: u64 = 100 * 1024,
+    param SLOTES_COUNT: u32 = 64        ,
+    param BUFFER_SIZE : u64 = 100 * 1024,
 ) (
     clk: input clock,
     rst: input reset,
@@ -43,14 +41,14 @@ module FrameParser #(
     stream_data_ready: output bool,
     stream_data      : input  u8  ,
 
-    ctx        : output Frame::FrameCtx               ,
-    macroblocks: output Frame::Macroblock [SlotsCount],
+    ctx        : output Frame::FrameCtx                 ,
+    macroblocks: output Frame::Macroblock [SLOTES_COUNT],
 ) {
     // the ring buffer, contains both part0 and part1
-    var buffer     : u8  [BufferSize];
-    var index      : u64             ;
-    var part0_index: u64             ;
-    var part1_index: u64             ;
+    var buffer     : u8  [BUFFER_SIZE];
+    var index      : u64              ;
+    var part0_index: u64              ;
+    var part1_index: u64              ;
 
     assign stream_data_ready = 1;
 
@@ -71,7 +69,7 @@ module FrameParser #(
                 // NOTE: this implicitly assume that part1_off is valid at this
                 // time and smaller than the `BufferSize`
                 // TODO: stream_data_ready to 0 when the parser still parsing
-                if index == BufferSize - 1 {
+                if index == BUFFER_SIZE - 1 {
                     index = ctx.part1_off;
                 } else {
                     index += 1;

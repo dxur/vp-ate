@@ -5,10 +5,8 @@
 //!
 //! # Controls
 //!
-//! - **Space**: Pause/unpause playback
-//! - **Right Arrow**: Next frame (when paused)
-//! - **Left Arrow**: Previous frame (when paused)
-//! - **Escape**: Exit
+//! - **F**: Pause/unpause playback
+//! - **N**: Next frame (when paused)
 
 #![allow(dead_code)]
 mod bit;

@@ -2,7 +2,7 @@
   description = "vp-ate";
 
   inputs = {
-    nixpkgs.url = "nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs?rev=9ef261221d1e72399f2036786498d78c38185c46";
   };
 
   outputs = { self, nixpkgs, ... }:
@@ -19,14 +19,11 @@
           libxkbcommon
           ffmpeg
           verilator
-          iverilog
           zlib
-          (python312.withPackages (p: with p; [
+          (python3.withPackages (p: with p; [
             cocotb
             pytest
           ]))
-          sv-lang
-          verible
           gtkwave
           gnumake
         ];

@@ -36,231 +36,28 @@ module MacroblockHeaderParser (
     var sub_y    : logic<3>;
     var prob     : u8      ;
 
-    // Context resolution signals
     var ctx_a: MacroblockHeaderPkg::IntraBMode;
     var ctx_l: MacroblockHeaderPkg::IntraBMode;
 
-    always_comb {
-        // Default assignments
-        ctx_a = MacroblockHeaderPkg::IntraBMode::BDcPred;
-        ctx_l = MacroblockHeaderPkg::IntraBMode::BDcPred;
+    always_comb {}
 
-        if sub_y >: 0 {
-            ctx_a = header.sub_modes[sub_y - 1][sub_x];
-        } else if above_valid {
-            if above_header.intra_y_mode == MacroblockHeaderPkg::IntraMBMode::BPred {
-                ctx_a = above_header.sub_modes[3][sub_x];
-            } else {
-                case above_header.intra_y_mode {
-                    MacroblockHeaderPkg::IntraMBMode::DcPred: ctx_a = MacroblockHeaderPkg::IntraBMode::BDcPred;
-                    MacroblockHeaderPkg::IntraMBMode::VPred : ctx_a = MacroblockHeaderPkg::IntraBMode::BVePred;
-                    MacroblockHeaderPkg::IntraMBMode::HPred : ctx_a = MacroblockHeaderPkg::IntraBMode::BHePred;
-                    MacroblockHeaderPkg::IntraMBMode::TmPred: ctx_a = MacroblockHeaderPkg::IntraBMode::BTmPred;
-                    default                                 : ctx_a = MacroblockHeaderPkg::IntraBMode::BDcPred;
-                }
-            }
-        }
+    always_comb {}
 
-        if sub_x >: 0 {
-            ctx_l = header.sub_modes[sub_y][sub_x - 1];
-        } else if left_valid {
-            if left_header.intra_y_mode == MacroblockHeaderPkg::IntraMBMode::BPred {
-                ctx_l = left_header.sub_modes[sub_y][3];
-            } else {
-                case left_header.intra_y_mode {
-                    MacroblockHeaderPkg::IntraMBMode::DcPred: ctx_l = MacroblockHeaderPkg::IntraBMode::BDcPred;
-                    MacroblockHeaderPkg::IntraMBMode::VPred : ctx_l = MacroblockHeaderPkg::IntraBMode::BVePred;
-                    MacroblockHeaderPkg::IntraMBMode::HPred : ctx_l = MacroblockHeaderPkg::IntraBMode::BHePred;
-                    MacroblockHeaderPkg::IntraMBMode::TmPred: ctx_l = MacroblockHeaderPkg::IntraBMode::BTmPred;
-                    default                                 : ctx_l = MacroblockHeaderPkg::IntraBMode::BDcPred;
-                }
-            }
-        }
-    }
-
-    always_comb {
-        bd.valid      = false;
-        bd.prob       = 128; // Default
-        bd.data_ready = false;
-        valid         = false;
-        prob          = 128;
-
-        case state {
-            State::ReadSkipCoeff: {
-                bd.valid      = true;
-                bd.data_ready = true;
-                bd.prob       = frame_ctx.prob_skip_false;
-            }
-            State::ReadYMode: {
-                bd.valid      = true;
-                bd.data_ready = true;
-                prob          = MacroblockHeaderPkg::KF_YMODE_PROB[next_node >> 1];
-                bd.prob       = prob;
-            }
-            State::ReadBMode: {
-                bd.valid      = true;
-                bd.data_ready = true;
-                prob          = Tables::KF_BMODE_PROB[ctx_a][ctx_l][next_node >> 1];
-                bd.prob       = prob;
-            }
-            State::ReadUVMode: {
-                bd.valid      = true;
-                bd.data_ready = true;
-                prob          = MacroblockHeaderPkg::KF_UV_MODE_PROB[next_node >> 1];
-                bd.prob       = prob;
-            }
-            State::Out: {
-                valid = true;
-            }
-            default: {}
-        }
-    }
-
-    always_ff {
-        if_reset {
-            state                = State::Idle;
-            header.mb_skip_coeff = false;
-            header.valid         = false;
-            header.intra_y_mode  = MacroblockHeaderPkg::IntraMBMode::DcPred;
-            header.intra_uv_mode = MacroblockHeaderPkg::IntraMBMode::DcPred;
-            header.sub_modes     = '{default: '{default: MacroblockHeaderPkg::IntraBMode::BDcPred}};
-            sub_x                = 0;
-            sub_y                = 0;
-            next_node            = 0;
-        } else {
-            case state {
-                State::Idle: {
-                    header.valid = false;
-                    state        = State::ReadSkipCoeff;
-                }
-
-                State::ReadSkipCoeff: {
-                    if bd.data_valid {
-                        header.mb_skip_coeff = bd.data as bool;
-                        if frame_ctx.mb_no_skip_coeff {
-                            header.mb_skip_coeff = false;
-                        }
-
-                        // Prepare for next state
-                        state     = State::ReadYMode;
-                        next_node = 0; // Root of YMode tree
-                    }
-                }
-
-                State::ReadYMode: {
-                    if bd.data_valid {
-                        var offset: logic<8>;
-                        if bd.data {
-                            offset = 1;
-                        } else {
-                            offset = 0;
-                        }
-
-                        var next_leaf: i8;
-                        next_leaf = MacroblockHeaderPkg::KF_YMODE_TREE[next_node + offset];
-                        if next_leaf <= 0 {
-                            // Leaf found
-                            header.intra_y_mode = (-next_leaf) as MacroblockHeaderPkg::IntraMBMode;
-                            if header.intra_y_mode == MacroblockHeaderPkg::IntraMBMode::BPred {
-                                state     = State::ReadBMode;
-                                sub_x     = 0;
-                                sub_y     = 0;
-                                next_node = 0;
-                            } else {
-                                state     = State::ReadUVMode;
-                                next_node = 0;
-                            }
-                        } else {
-                            next_node = next_leaf as u8;
-                        }
-                    }
-                }
-
-                State::ReadBMode: {
-                    if bd.data_valid {
-                        var offset: logic<8>;
-                        if bd.data {
-                            offset = 1;
-                        } else {
-                            offset = 0;
-                        }
-                        var next_leaf: i8;
-                        next_leaf = MacroblockHeaderPkg::BMODE_TREE[next_node + offset];
-                        if next_leaf <= 0 {
-                            // Leaf found
-                            header.sub_modes[sub_y][sub_x] = (-next_leaf) as MacroblockHeaderPkg::IntraBMode;
-                            next_node                      = 0;
-
-                            // Iterate 4x4
-                            if sub_x == 3 {
-                                sub_x = 0;
-                                if sub_y == 3 {
-                                    state = State::ReadUVMode;
-                                    sub_y = 0;
-                                } else {
-                                    sub_y += 1;
-                                }
-                            } else {
-                                sub_x += 1;
-                            }
-                        } else {
-                            next_node = next_leaf as u8;
-                        }
-                    }
-                }
-
-                State::ReadUVMode: {
-                    if bd.data_valid {
-                        var offset: logic<8>;
-                        if bd.data {
-                            offset = 1;
-                        } else {
-                            offset = 0;
-                        }
-                        var next_leaf: i8;
-                        next_leaf = MacroblockHeaderPkg::UV_MODE_TREE[next_node + offset];
-                        if next_leaf <= 0 {
-                            header.intra_uv_mode = (-next_leaf) as MacroblockHeaderPkg::IntraMBMode;
-                            state                = State::Out;
-                            header.valid         = true;
-                        } else {
-                            next_node = next_leaf as u8;
-                        }
-                    }
-                }
-
-                State::Out: {
-                    if ready {
-                        state        = State::Idle;
-                        header.valid = false;
-                    }
-                }
-
-                default: {}
-            }
-        }
-    }
+    always_ff {}
 }
 
 module MacroblockParserTest (
     clk: input clock,
     rst: input reset,
 
-    // BoolDecoder interface signals exposed for test
-    // Test (Python) plays the role of BoolDecoder (Self)
-    // DUT (Parser) plays the role of User
-
-    // Inputs from Python (driving Self outputs)
     bd_ready     : input bool ,
     bd_data_valid: input bool ,
     bd_data      : input logic,
 
-    // Outputs to Python (reading User outputs)
     bd_valid     : output bool    ,
     bd_prob      : output logic<8>,
     bd_data_ready: output bool    ,
 
-    // Parser Inputs
     frame_ctx   : input Frame::FrameCtx                      ,
     left_header : input MacroblockHeaderPkg::MacroblockHeader,
     left_valid  : input bool                                 ,
@@ -270,22 +67,10 @@ module MacroblockParserTest (
     y           : input u8                                   ,
     parser_ready: input bool                                 ,
 
-    // Parser Outputs
     header: output MacroblockHeaderPkg::MacroblockHeader,
     valid : output bool                                 ,
 ) {
     inst bd: BoolDecoderIf;
-
-    // Connect test ports to interface
-    // Python drives inputs -> Interface signals
-    assign bd.ready      = bd_ready;
-    assign bd.data_valid = bd_data_valid;
-    assign bd.data       = bd_data;
-
-    // Interface signals -> Outputs to Python
-    assign bd_valid      = bd.valid;
-    assign bd_prob       = bd.prob;
-    assign bd_data_ready = bd.data_ready;
 
     inst parser: MacroblockHeaderParser (
         clk         : clk         ,
