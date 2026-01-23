@@ -1,6 +1,6 @@
 target/
 build/
-sim/
+sim_build/
 obj_dir/
 .build/
 .vscode/
@@ -9,4 +9,5 @@ obj_dir/
 .direnv/
 dependencies/
 vp_ate.f
-
+results.xml
+**/__pycache__/

@@ -1,4 +1,9 @@
+.PHONY: test
+
+ARGS := $(filter-out $@,$(MAKECMDGOALS))
+
 test:
-	# compile verilator and test
+	@./test.py $(filter-out $@,$(MAKECMDGOALS))
 
-
+%:
+	@:

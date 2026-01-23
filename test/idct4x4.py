@@ -1,3 +1,4 @@
+import test
 import logging
 import random
 import cocotb
@@ -122,6 +123,7 @@ async def drive_and_test(dut, sample, transform):
     )
 
 
+@test.module("Idct4x4Test")
 @cocotb.test()
 async def test_idct4x4(dut):
     cocotb.start_soon(Clock(dut.clk, 10, "ns").start())

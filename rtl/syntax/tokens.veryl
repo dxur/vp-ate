@@ -1,3 +1,0 @@
-package TokensPkg {
-    type Tokens = u16 [16];
-}

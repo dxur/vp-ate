@@ -1,6 +1,6 @@
+import test
 import cocotb
 from cocotb.triggers import Timer, RisingEdge
-
 
 async def generate_clock(dut):
     for _ in range(10):
@@ -9,9 +9,9 @@ async def generate_clock(dut):
         dut.clk.value = 1
         await Timer(1, unit="ns")
 
-
+@test.module("MacroParserTest")
 @cocotb.test()
-async def test_bool_decoder(dut):
+async def test_macroblock_parser(dut):
     cocotb.start_soon(generate_clock(dut))
     dut.rst.value = 0
     await Timer(5, unit="ns")
