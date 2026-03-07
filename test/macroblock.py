@@ -2,12 +2,14 @@ import test
 import cocotb
 from cocotb.triggers import Timer, RisingEdge
 
+
 async def generate_clock(dut):
     for _ in range(10):
         dut.clk.value = 0
         await Timer(1, unit="ns")
         dut.clk.value = 1
         await Timer(1, unit="ns")
+
 
 @test.module("MacroParserTest")
 @cocotb.test()

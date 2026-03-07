@@ -29,27 +29,13 @@ module BoolDecoder (
     input var logic clk,
     input var logic rst,
 
-    input var  logic                 mem_ready,
-    output var logic                 mem_valid,
-    input var  logic                 mem_data_valid,
-    output var logic                 mem_data_ready,
-    input var  byte unsigned         mem_data,
-    output var logic                 __self_ready,
-    input var  logic                 __self_valid,
-    input var  logic         [8-1:0] __self_prob,
-    input var  logic                 __self_data_ready,
-    output var logic                 __self_data_valid,
-    output var logic                 __self_data
+    input var  logic              mem_ready,
+    output var logic              mem_valid,
+    input var  logic              mem_data_valid,
+    output var logic              mem_data_ready,
+    input var  byte unsigned      mem_data,
+               BoolDecoderIf.self self
 );
-  BoolDecoderIf self ();
-  always_comb begin
-    __self_ready      = self.ready;
-    self.valid        = __self_valid;
-    self.prob         = __self_prob;
-    self.data_ready   = __self_data_ready;
-    __self_data_valid = self.data_valid;
-    __self_data       = self.data;
-  end
   logic [32-1:0] value;
   logic [32-1:0] range;
   logic [ 4-1:0] bit_count;
@@ -169,4 +155,41 @@ module BoolDecoder (
       end
     endcase
   end
+endmodule
+
+module BoolDecoderTest (
+    input var  logic                 clk,
+    input var  logic                 rst,
+    input var  logic                 mem_ready,
+    output var logic                 mem_valid,
+    input var  logic                 mem_data_valid,
+    output var logic                 mem_data_ready,
+    input var  byte unsigned         mem_data,
+    output var logic                 self_ready,
+    input var  logic                 self_valid,
+    input var  logic         [8-1:0] self_prob,
+    input var  logic                 self_data_ready,
+    output var logic                 self_data_valid,
+    output var logic                 self_data
+);
+  BoolDecoderIf self ();
+  always_comb begin
+    self_ready      = self.ready;
+    self.valid      = self_valid;
+    self.prob       = self_prob;
+    self.data_ready = self_data_ready;
+    self_data_valid = self.data_valid;
+    self_data       = self.data;
+  end
+
+  BoolDecoder uut (
+      .clk(clk),
+      .rst(rst),
+      .mem_ready(mem_ready),
+      .mem_valid(mem_valid),
+      .mem_data_valid(mem_data_valid),
+      .mem_data_ready(mem_data_ready),
+      .mem_data(mem_data),
+      .self(self)
+  );
 endmodule

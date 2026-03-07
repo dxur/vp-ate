@@ -11,7 +11,7 @@ async def generate_clock(dut):
         await Timer(1, unit="ns")
 
 
-@test.module("BoolDecoder")
+@test.module("BoolDecoderTest")
 @cocotb.test()
 async def test_bool_decoder(dut):
     cocotb.start_soon(generate_clock(dut))
