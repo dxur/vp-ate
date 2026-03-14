@@ -11,9 +11,6 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
 
 
-# ---------------------------------------------------------------------------
-# Minimal software bool-decoder model (matches BoolDecoder RTL)
-# ---------------------------------------------------------------------------
 class BoolDecoderModel:
     def __init__(self, data: bytes):
         self.data = data

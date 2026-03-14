@@ -25,6 +25,19 @@ interface BoolDecoderIf;
   );
 endinterface
 
+// VP8 boolean arithmetic decoder.
+//
+// Decodes booleans from an arithmetic-coded bitstream. Maintains a range
+// and value register, splitting on each decode according to the supplied
+// probability (0-255). After each decode the range is renormalised by
+// left-shifting until range >= 128, refilling value[7:0] from memory
+// every 8 shifts.
+//
+// Memory interface is a simple valid/ready request with a separate
+// valid/ready data response:
+//   - Assert mem_valid to request a byte; deassert when mem_ready seen.
+//   - mem_data_valid pulses with the byte on mem_data; assert mem_data_ready
+//     to accept it.
 module BoolDecoder (
     input var logic clk,
     input var logic rst,
@@ -41,17 +54,21 @@ module BoolDecoder (
   logic [ 4-1:0] bit_count;
   logic [ 2-1:0] init;
 
-  typedef enum logic [5-1:0] {
-    State_init = 5'd1,
-    State_idle = 5'd2,
-    State_check_range = 5'd4,
-    State_wait_byte = 5'd8,
-    State_compute_bool = 5'd16
+  typedef enum logic [6-1:0] {
+    State_init         = 6'd1,
+    State_idle         = 6'd2,
+    State_check_range  = 6'd4,
+    State_request_byte = 6'd8,
+    State_wait_byte    = 6'd16,
+    State_compute_bool = 6'd32
   } State;
-  State          state;
+  State state;
 
+  // split = 1 + ((range-1) * prob) >> 8   (matches Rust reference exactly)
   logic [32-1:0] split;
   always_comb split = 1 + (((range - 1) * self.prob) >> 8);
+
+  // bigsplit = split << 8  (comparison point in the value register)
   logic [32-1:0] split_shifted;
   always_comb split_shifted = split << 8;
 
@@ -65,52 +82,79 @@ module BoolDecoder (
     end else begin
       case (state) inside
         default: state <= State_init;
+
+        // ----------------------------------------------------------------
+        // Init: read two bytes to seed value[15:8] then value[7:0].
+        // Mirrors the Rust:  for _ in 0..2 { value = (value<<8) | byte }
+        // ----------------------------------------------------------------
         State_init: begin
           range <= 255;
           if (init == 2) begin
             state <= State_idle;
           end else if (mem_data_valid) begin
-            value[7:0] <= mem_data;
-            init       <= init + 1;
+            // BUG 1 FIX: first byte → high octet, second byte → low octet.
+            if (init == 0)
+              value[15:8] <= mem_data;
+            else
+              value[7:0]  <= mem_data;
+            init <= init + 1;
           end
         end
 
+        // ----------------------------------------------------------------
+        // Idle: wait for a decode request from the user.
+        // ----------------------------------------------------------------
         State_idle: begin
           if (self.valid) begin
             state <= State_check_range;
           end
         end
 
+        // ----------------------------------------------------------------
+        // Renormalise: shift value and range left one bit per cycle until
+        // range >= 128.  Every 8 shifts fetch a new byte from memory.
+        // ----------------------------------------------------------------
         State_check_range: begin
           if (range >= 128) begin
             state <= State_compute_bool;
+          end else if (bit_count == 8) begin
+            state <= State_request_byte;
           end else begin
-            if (bit_count == 8) begin
-              bit_count <= 0;
-              if (mem_ready) begin
-                state <= State_wait_byte;
-              end
-            end else begin
-              value     <= value << 1;
-              range     <= range << 1;
-              bit_count <= bit_count + 1;
-            end
+            value     <= value << 1;
+            range     <= range << 1;
+            bit_count <= bit_count + 1;
           end
         end
 
+        State_request_byte: begin
+          if (mem_ready) begin
+            bit_count <= 0;
+            state     <= State_wait_byte;
+          end
+        end
+
+        // ----------------------------------------------------------------
+        // Wait for the memory to deliver the refill byte.
+        // ----------------------------------------------------------------
         State_wait_byte: begin
           if (mem_data_valid) begin
+            // OR into low bits — upper bits are already zero from shifting.
             value[7:0] <= mem_data;
             state      <= State_check_range;
           end
         end
 
+        // ----------------------------------------------------------------
+        // Compute and output the decoded boolean.
+        // ----------------------------------------------------------------
         State_compute_bool: begin
           if (self.data_ready) begin
             if (value >= split_shifted) begin
+              // BIT = 1
               range <= range - split;
               value <= value - split_shifted;
             end else begin
+              // BIT = 0
               range <= split;
             end
             state <= State_idle;
@@ -120,59 +164,76 @@ module BoolDecoder (
     end
   end
 
+  // -----------------------------------------------------------------------
+  // Combinational outputs
+  // -----------------------------------------------------------------------
   always_comb begin
     mem_valid       = 1'b0;
     mem_data_ready  = 1'b0;
     self.data_valid = 1'b0;
     self.ready      = 1'b0;
-    self.data       = 0;
+    self.data       = 1'b0;
 
-    case (state) inside
+    // Gate all outputs while rst is low — prevents the memory model from
+    // seeing spurious mem_valid requests before the DUT leaves reset.
+    if (rst) case (state) inside
       default: begin
       end
+
       State_init: begin
         if (init != 2) begin
           mem_valid      = 1'b1;
           mem_data_ready = 1'b1;
         end
       end
+
       State_idle: begin
         self.ready = 1'b1;
       end
+
       State_check_range: begin
-        if (range < 128 && bit_count == 8) begin
-          mem_valid = 1'b1;
-        end
+        // No mem_valid here — the FSM transitions immediately to
+        // State_request_byte when a refill is needed (bit_count==8).
       end
+
+      // BUG 3 FIX: mem_valid held continuously in the dedicated request state.
+      State_request_byte: begin
+        mem_valid = 1'b1;
+      end
+
       State_wait_byte: begin
         mem_data_ready = 1'b1;
       end
+
       State_compute_bool: begin
         self.data_valid = 1'b1;
-        if (value < split_shifted) begin
-          self.data = 1;
-        end
+        // BUG 2 FIX: bit is 1 when value >= split_shifted (was inverted).
+        self.data = (value >= split_shifted) ? 1'b1 : 1'b0;
       end
     endcase
   end
 endmodule
 
+// ---------------------------------------------------------------------------
+// Flat wrapper - exposes BoolDecoderIf ports as plain logic for cocotb.
+// ---------------------------------------------------------------------------
 module BoolDecoderTest (
-    input var  logic                 clk,
-    input var  logic                 rst,
-    input var  logic                 mem_ready,
+    input  var logic                 clk,
+    input  var logic                 rst,
+    input  var logic                 mem_ready,
     output var logic                 mem_valid,
-    input var  logic                 mem_data_valid,
+    input  var logic                 mem_data_valid,
     output var logic                 mem_data_ready,
-    input var  byte unsigned         mem_data,
+    input  var byte unsigned         mem_data,
     output var logic                 self_ready,
-    input var  logic                 self_valid,
-    input var  logic         [8-1:0] self_prob,
-    input var  logic                 self_data_ready,
+    input  var logic                 self_valid,
+    input  var logic         [8-1:0] self_prob,
+    input  var logic                 self_data_ready,
     output var logic                 self_data_valid,
     output var logic                 self_data
 );
   BoolDecoderIf self ();
+
   always_comb begin
     self_ready      = self.ready;
     self.valid      = self_valid;
@@ -183,13 +244,13 @@ module BoolDecoderTest (
   end
 
   BoolDecoder uut (
-      .clk(clk),
-      .rst(rst),
-      .mem_ready(mem_ready),
-      .mem_valid(mem_valid),
+      .clk           (clk),
+      .rst           (rst),
+      .mem_ready     (mem_ready),
+      .mem_valid     (mem_valid),
       .mem_data_valid(mem_data_valid),
       .mem_data_ready(mem_data_ready),
-      .mem_data(mem_data),
-      .self(self)
+      .mem_data      (mem_data),
+      .self          (self)
   );
 endmodule

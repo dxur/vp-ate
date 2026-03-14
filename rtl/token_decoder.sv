@@ -40,53 +40,38 @@ module TokenDecoder
   localparam byte unsigned COEFF_BANDS[0:15] = '{0,1,2,3,6,4,5,6,6,6,6,6,6,6,6,7};
   localparam byte unsigned ZIGZAG[0:15]      = '{0,1,4,8,5,2,3,6,9,12,13,10,7,11,14,15};
 
-  // DCT coefficient tree (with EOB)  - 22 entries
-  localparam byte signed COEFF_TREE[0:21] = '{
-    -8'd11,  2,       // 0: EOB or not?
-    -8'd0,   4,       // 2: DCT0 or not?
-    -8'd1,   6, 8, 12, // 4
-    -8'd2,  10,       // 8
-    -8'd3,            // 10
-    -8'd4,  14, 16,   // 11, 13
-    -8'd5,            // 14
-    -8'd6,  18, 20,   // 16
-    -8'd7,            // 18
-    -8'd8,            // 20 (was: DctCat3)
-    -8'd9,  // DctCat4 (padding issue - re-index)
-    -8'd10  // DctCat5..6 are merged below
-  };
-
-  // Correct COEFF_TREE matching the Rust const exactly
+  // DCT coefficient tree (with EOB).
+  // Leaf encoding: -(token + 1), so token=0 -> -1, token=11 (EOB) -> -12.
+  // This avoids the zero-ambiguity: every leaf is strictly < 0.
+  // Branch entries are positive node indices as usual.
   localparam byte signed CT[0:21] = '{
-    -8'sd11,  8'sd2,        // node 0: EOB (11)
-    -8'sd0,   8'sd4,        // node 2: Dct0 (0)
-    -8'sd1,   8'sd6,        // node 4: Dct1 (1)
-     8'sd8,   8'sd12,       // node 6
-    -8'sd2,   8'sd10,       // node 8: Dct2 (2)
-    -8'sd3,                 // node 10: Dct3 (3)
-    -8'sd4,   8'sd14, 8'sd16, // node 12: Dct4 (4)
-    -8'sd5,                 // node 14: DctCat1 (5)
-    -8'sd6,   8'sd18, 8'sd20, // node 16: DctCat2 (6)
-    -8'sd7,                 // node 18: DctCat3 (7)
-    -8'sd8,                 // node 20: DctCat4 (8)
-    -8'sd9,                 // placeholder
-    -8'sd10                 // DctCat6 (10)
+    -8'sd12,  8'sd2,        // node 0: EOB (token 11 -> -12)
+    -8'sd1,   8'sd4,        // node 2: Dct0 (token  0 -> -1)
+    -8'sd2,   8'sd6,        // node 4: Dct1 (token  1 -> -2)
+     8'sd8,   8'sd12,       // node 6: branch
+    -8'sd3,   8'sd10,       // node 8: Dct2 (token  2 -> -3)
+    -8'sd4,   -8'sd5,       // node 10: Dct3 (-4), Dct4 (-5)
+    -8'sd6,   8'sd14,       // node 12: DctCat1 (token 5 -> -6)
+    -8'sd7,   8'sd16,       // node 14: DctCat2 (token 6 -> -7)
+    -8'sd8,   8'sd18,       // node 16: DctCat3 (token 7 -> -8)
+    -8'sd9,   8'sd20,       // node 18: DctCat4 (token 8 -> -9)
+    -8'sd10,  -8'sd11       // node 20: DctCat5 (-10), DctCat6 (-11)
   };
 
-  // COEFF_TREE_NOEOB (20 entries, no EOB branch)
+  // COEFF_TREE_NOEOB: same tree without the first pair (no EOB branch).
+  // Node indices are shifted down by 2 vs CT; same -(token+1) leaf encoding.
+  // Prob index = (node >> 1) + 1  (to account for the removed first decision).
   localparam byte signed CTNOEOB[0:19] = '{
-    -8'sd0,   8'sd2,        // node 0: Dct0 (0)
-    -8'sd1,   8'sd4,        // node 2: Dct1 (1)
-     8'sd6,   8'sd10,       // node 4
-    -8'sd2,   8'sd8,        // node 6: Dct2 (2)
-    -8'sd3,                 // node 8: Dct3 (3)
-    -8'sd4,   8'sd12, 8'sd14, // node 10: Dct4 (4)
-    -8'sd5,                 // node 12: DctCat1 (5)
-    -8'sd6,   8'sd16, 8'sd18, // node 14: DctCat2 (6)
-    -8'sd7,                 // node 16: DctCat3 (7)
-    -8'sd8,                 // node 18: DctCat4 (8)
-    -8'sd9,                 // DctCat5 (9)
-    -8'sd10                 // DctCat6 (10)
+    -8'sd1,   8'sd2,        // node 0: Dct0 (token  0 -> -1)
+    -8'sd2,   8'sd4,        // node 2: Dct1 (token  1 -> -2)
+     8'sd6,   8'sd10,       // node 4: branch
+    -8'sd3,   8'sd8,        // node 6: Dct2 (token  2 -> -3)
+    -8'sd4,   -8'sd5,       // node 8: Dct3 (-4), Dct4 (-5)
+    -8'sd6,   8'sd12,       // node 10: DctCat1 (token 5 -> -6)
+    -8'sd7,   8'sd14,       // node 12: DctCat2 (token 6 -> -7)
+    -8'sd8,   8'sd16,       // node 14: DctCat3 (token 7 -> -8)
+    -8'sd9,   8'sd18,       // node 16: DctCat4 (token 8 -> -9)
+    -8'sd10,  -8'sd11       // node 18: DctCat5 (-10), DctCat6 (-11)
   };
 
   // Category extra-bit probabilities (flattened, lookup by cat offset then bit)
@@ -174,15 +159,23 @@ module TokenDecoder
           band = COEFF_BANDS[coeff_idx];
 
           if (use_noeob) begin
-            tb = CTNOEOB[tree_node[3:0]];
+            tb = CTNOEOB[tree_node[4:0]];
           end else begin
-            tb = CT[tree_node[3:0]];
+            tb = CT[tree_node[4:0]];
           end
 
           if (tb >= 0) begin
-            // Non-leaf: issue bool decode
-            // Prob index = half of node index
-            pb = coeff_prob(plane, band, cur_complexity, tree_node[3:0] >> 1, use_noeob);
+            // Non-leaf: issue bool decode.
+            // CT:     prob index = node >> 1  (node 0->prob[0], node 2->prob[1], ...)
+            // CTNOEOB: same tree but with the EOB pair (nodes 0-1) removed, so
+            //          CTNOEOB node 0 corresponds to CT node 2 (prob[1]).
+            //          Correct index = (node >> 1) + 1.
+            if (use_noeob)
+              pb = coeff_prob(plane, band, cur_complexity,
+                              4'((tree_node[4:0] >> 1) + 5'd1), use_noeob);
+            else
+              pb = coeff_prob(plane, band, cur_complexity,
+                              4'(tree_node[4:0] >> 1), use_noeob);
             bd.prob  = pb;
             bd.valid = 1'b1;
           end
@@ -253,13 +246,13 @@ module TokenDecoder
         S_COEFF: begin
           automatic byte signed tb;
           if (use_noeob)
-            tb = CTNOEOB[tree_node[3:0]];
+            tb = CTNOEOB[tree_node[4:0]];
           else
-            tb = CT[tree_node[3:0]];
+            tb = CT[tree_node[4:0]];
 
           if (tb < 0) begin
-            // Leaf reached - extract token (positive = -tb-1... actually token = -tb for our encoding)
-            token <= -tb;
+            // Leaf: tb = -(token+1), so token = (-tb) - 1
+            token <= 4'((-tb) - 1);
 
             // DCT EOB (token 11)
             if (-tb == 11) begin

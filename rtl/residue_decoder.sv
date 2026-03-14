@@ -17,7 +17,7 @@
 // cur_left/cur_top and receives updated values.
 
 package ResiduePkg;
-  typedef struct packed {
+  typedef struct {
     shortint signed luma  [0:15][0:15];  // 16 4×4 blocks -> 16×16 pixels
     shortint signed chroma[0:1][0:7][0:7]; // 2 planes × 8×8
   } MbResiduals;
@@ -127,6 +127,8 @@ module ResidueDecoder (
       output logic [1:0]  blk_xy_y,  // sub-block row (Y only)
       output logic [1:0]  blk_xy_x   // sub-block col (Y only)
   );
+    logic [4:0] tmp;
+
     blk_xy_y   = '0;
     blk_xy_x   = '0;
     first_coeff = 1'b0;
@@ -139,8 +141,9 @@ module ResidueDecoder (
       dcq   = frame_ctx.ydc;
       acq   = frame_ctx.yac;
       first_coeff = y2_present ? 1'b1 : 1'b0;
-      blk_xy_y = (s-1)[3:2];
-      blk_xy_x = (s-1)[1:0];
+      tmp = s - 1;
+      blk_xy_y = tmp[3:2];
+      blk_xy_x = tmp[1:0];
     end else if (s >= 17 && s <= 20) begin
       plane = 2'd2;  // U
       dcq   = frame_ctx.uvdc;
@@ -161,25 +164,38 @@ module ResidueDecoder (
       input logic [8:0] hl,
       input logic [8:0] ht
   );
+    logic [4:0] tmp;
+    logic [4:0] t;
+    logic [1:0] bx, by;
+    logic bx1;
     logic top_hc, left_hc;
+
     if (s == 0 && y2p) begin
       top_hc  = ht[8];
       left_hc = hl[8];
+
     end else if (s >= 1 && s <= 16) begin
-      logic [1:0] bx, by;
-      by = (s-1)[3:2];
-      bx = (s-1)[1:0];
-      top_hc  = ht[4 + bx];    // y_hc top for this column within MB
-      left_hc = (bx == 0) ? hl[4 + by] : 1'b0; // simplified
+      tmp = s - 1;
+      by  = tmp[3:2];
+      bx  = tmp[1:0];
+
+      top_hc  = ht[4 + bx];
+      left_hc = (bx == 0) ? hl[4 + by] : 1'b0;
+
     end else if (s >= 17 && s <= 20) begin
-      logic bx;
-      bx = (s-17)[0];
-      top_hc  = ht[3 - (s-17)/2]; // u slots
-      left_hc = hl[3 - (s-17)/2];
+      t = s - 17;
+      bx1 = t[0];
+
+      top_hc  = ht[3 - (t >> 1)];
+      left_hc = hl[3 - (t >> 1)];
+
     end else begin
-      top_hc  = ht[1 - (s-21)/2];
-      left_hc = hl[1 - (s-21)/2];
+      t = s - 21;
+
+      top_hc  = ht[1 - (t >> 1)];
+      left_hc = hl[1 - (t >> 1)];
     end
+
     get_complexity = {1'b0, top_hc} + {1'b0, left_hc};
   endfunction
 
@@ -315,7 +331,9 @@ module ResidueDecoder (
           if (seq >= 1 && seq <= 16) begin
             logic [3:0] bi;
             logic [1:0] brow, bcol;
-            bi   = (seq - 1)[3:0];
+            logic [4:0] t;
+            t = s - 1;
+            bi   = t[3:0];
             brow = bi[3:2];
             bcol = bi[1:0];
             for (int r = 0; r < 4; r++)
@@ -324,14 +342,18 @@ module ResidueDecoder (
           end else if (seq >= 17 && seq <= 20) begin
             // U blocks: 2×2 grid, seq 17-20 -> [0][0],[0][1],[1][0],[1][1]
             logic [1:0] bi;
-            bi = (seq - 17)[1:0];
+            logic [4:0] t;
+            t = s - 17;
+            bi = t[1:0];
             for (int r = 0; r < 4; r++)
               for (int c = 0; c < 4; c++)
                 residuals.chroma[0][bi[1]*4+r][bi[0]*4+c] <= idct_block[r][c];
           end else begin
             // V blocks: seq 21-24
             logic [1:0] bi;
-            bi = (seq - 21)[1:0];
+            logic [4:0] t;
+            t = s - 21;
+            bi = t[1:0];
             for (int r = 0; r < 4; r++)
               for (int c = 0; c < 4; c++)
                 residuals.chroma[1][bi[1]*4+r][bi[0]*4+c] <= idct_block[r][c];

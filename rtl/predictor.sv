@@ -19,7 +19,7 @@ package PredictorPkg;
   typedef byte unsigned Luma  [0:15][0:15];
   typedef byte unsigned Chroma[0:7][0:7];
 
-  typedef struct packed {
+  typedef struct {
     logic valid;
     Luma   y;
     Chroma cb;
@@ -269,7 +269,7 @@ module Predictor (
             IntraBMode mode;
             mode = header.sub_modes[brow][bcol];
 
-            pred4 = predict_4x4(mode, T4, L4, TL, TR4);
+            predict_4x4(pred4, mode, T4, L4, TL, TR4);
 
             for (int r=0;r<4;r++)
               for (int c=0;c<4;c++)
@@ -281,22 +281,28 @@ module Predictor (
   end
 
   // 4×4 prediction dispatch function
-  function automatic byte unsigned [0:3][0:3] predict_4x4(
-      input IntraBMode      mode,
-      input byte unsigned   T[0:3],
-      input byte unsigned   L[0:3],
-      input byte unsigned   TL,
-      input byte unsigned   TR[0:3]
+  // Return value via output argument (Verilator requires this for unpacked array returns)
+  function automatic void predict_4x4(
+      output byte unsigned  out[0:3][0:3],
+      input  IntraBMode     mode,
+      input  byte unsigned  T[0:3],
+      input  byte unsigned  L[0:3],
+      input  byte unsigned  TL,
+      input  byte unsigned  TR[0:3]
   );
-    byte unsigned out[0:3][0:3];
+    // Locals hoisted to function scope (required by Verilator)
     byte unsigned a_ext[0:7];
+    byte unsigned dc;
+    byte unsigned row_v[0:3];
+    byte unsigned col_v[0:3];
+    byte unsigned e[0:8];
+    byte unsigned lv[0:3];
 
     out = '{default: '{default: 8'd128}};
 
     case (mode)
       // BDcPred
       IntraBMode_BDcPred: begin
-        byte unsigned dc;
         dc = byte'((int'(T[0])+int'(T[1])+int'(T[2])+int'(T[3])+
                     int'(L[0])+int'(L[1])+int'(L[2])+int'(L[3])+4) >> 3);
         for (int r=0;r<4;r++) for (int c=0;c<4;c++) out[r][c] = dc;
@@ -311,7 +317,6 @@ module Predictor (
 
       // BVePred: vertical with smoothed top
       IntraBMode_BVePred: begin
-        byte unsigned row_v[0:3];
         row_v[0] = avg3(TL,    T[0], T[1]);
         row_v[1] = avg3(T[0],  T[1], T[2]);
         row_v[2] = avg3(T[1],  T[2], T[3]);
@@ -321,7 +326,6 @@ module Predictor (
 
       // BHePred: horizontal with smoothed left
       IntraBMode_BHePred: begin
-        byte unsigned col_v[0:3];
         col_v[0] = avg3(TL,   L[0], L[1]);
         col_v[1] = avg3(L[0], L[1], L[2]);
         col_v[2] = avg3(L[1], L[2], L[3]);
@@ -331,9 +335,8 @@ module Predictor (
 
       // BLdPred: left-down diagonal
       IntraBMode_BLdPred: begin
-        for (int i=0;i<7;i++) begin
-          if (i<4) a_ext[i] = T[i]; else a_ext[i] = TR[i-4];
-        end
+        for (int i=0;i<4;i++) a_ext[i]   = T[i];
+        for (int i=0;i<4;i++) a_ext[4+i] = TR[i];
         a_ext[7] = TR[3];
         out[0][0]=avg3(a_ext[0],a_ext[1],a_ext[2]);
         out[0][1]=avg3(a_ext[1],a_ext[2],a_ext[3]); out[1][0]=out[0][1];
@@ -346,7 +349,6 @@ module Predictor (
 
       // BRdPred: right-down diagonal
       IntraBMode_BRdPred: begin
-        byte unsigned e[0:8];
         e[0]=L[3]; e[1]=L[2]; e[2]=L[1]; e[3]=L[0]; e[4]=TL;
         e[5]=T[0]; e[6]=T[1]; e[7]=T[2]; e[8]=T[3];
         out[3][0]=avg3(e[0],e[1],e[2]); out[3][1]=avg3(e[1],e[2],e[3]);
@@ -360,7 +362,6 @@ module Predictor (
 
       // BVrPred
       IntraBMode_BVrPred: begin
-        byte unsigned e[0:8];
         e[0]=L[3]; e[1]=L[2]; e[2]=L[1]; e[3]=L[0]; e[4]=TL;
         e[5]=T[0]; e[6]=T[1]; e[7]=T[2]; e[8]=T[3];
         out[3][0]=avg3(e[1],e[2],e[3]); out[2][0]=avg3(e[2],e[3],e[4]);
@@ -376,7 +377,7 @@ module Predictor (
 
       // BVlPred
       IntraBMode_BVlPred: begin
-        for (int i=0;i<4;i++) a_ext[i] = T[i];
+        for (int i=0;i<4;i++) a_ext[i]   = T[i];
         for (int i=0;i<4;i++) a_ext[4+i] = TR[i];
         out[0][0]=avg2(a_ext[0],a_ext[1]);
         out[1][0]=avg3(a_ext[0],a_ext[1],a_ext[2]);
@@ -392,7 +393,6 @@ module Predictor (
 
       // BHdPred
       IntraBMode_BHdPred: begin
-        byte unsigned e[0:8];
         e[0]=L[3]; e[1]=L[2]; e[2]=L[1]; e[3]=L[0]; e[4]=TL;
         e[5]=T[0]; e[6]=T[1]; e[7]=T[2]; e[8]=T[3];
         out[3][0]=avg2(e[0],e[1]);
@@ -409,22 +409,19 @@ module Predictor (
 
       // BHuPred
       IntraBMode_BHuPred: begin
-        byte unsigned l[0:3];
-        l = L;
-        out[0][0]=avg2(l[0],l[1]);
-        out[0][1]=avg3(l[0],l[1],l[2]);
-        out[0][2]=avg2(l[1],l[2]); out[1][0]=out[0][2];
-        out[0][3]=avg3(l[1],l[2],l[3]); out[1][1]=out[0][3];
-        out[1][2]=avg2(l[2],l[3]); out[2][0]=out[1][2];
-        out[1][3]=avg3(l[2],l[3],l[3]); out[2][1]=out[1][3];
-        out[2][2]=l[3]; out[2][3]=l[3];
-        out[3][0]=l[3]; out[3][1]=l[3]; out[3][2]=l[3]; out[3][3]=l[3];
+        lv = L;
+        out[0][0]=avg2(lv[0],lv[1]);
+        out[0][1]=avg3(lv[0],lv[1],lv[2]);
+        out[0][2]=avg2(lv[1],lv[2]); out[1][0]=out[0][2];
+        out[0][3]=avg3(lv[1],lv[2],lv[3]); out[1][1]=out[0][3];
+        out[1][2]=avg2(lv[2],lv[3]); out[2][0]=out[1][2];
+        out[1][3]=avg3(lv[2],lv[3],lv[3]); out[2][1]=out[1][3];
+        out[2][2]=lv[3]; out[2][3]=lv[3];
+        out[3][0]=lv[3]; out[3][1]=lv[3]; out[3][2]=lv[3]; out[3][3]=lv[3];
       end
 
       default: ;
     endcase
-
-    predict_4x4 = out;
   endfunction
 
   // -----------------------------------------------------------------------
@@ -433,10 +430,15 @@ module Predictor (
   PredictorPkg::Chroma pred_cb, pred_cr;
 
   always_comb begin
+    // Locals hoisted to block scope (Verilator requirement)
+    byte unsigned dc_b, dc_r;
+    byte unsigned Tb[0:7], Tr_[0:7];
+    byte unsigned Lb[0:7], Lr_[0:7];
+    byte unsigned Pb, Pr;
+
     pred_cb = '{default: '{default: 8'd128}};
     pred_cr = '{default: '{default: 8'd128}};
 
-    byte unsigned dc_b, dc_r;
     dc_b = dc_pred8(top_valid, left_valid, top_cb, left_cb);
     dc_r = dc_pred8(top_valid, left_valid, top_cr, left_cr);
 
@@ -449,37 +451,33 @@ module Predictor (
       end
 
       IntraMBMode_VPred: begin
-        byte unsigned Tb[0:7], Tr[0:7];
-        Tb = top_valid ? top_cb : '{default: 8'd127};
-        Tr = top_valid ? top_cr : '{default: 8'd127};
+        Tb  = top_valid ? top_cb : '{default: 8'd127};
+        Tr_ = top_valid ? top_cr : '{default: 8'd127};
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) begin
           pred_cb[r][c] = Tb[c];
-          pred_cr[r][c] = Tr[c];
+          pred_cr[r][c] = Tr_[c];
         end
       end
 
       IntraMBMode_HPred: begin
-        byte unsigned Lb[0:7], Lr[0:7];
-        Lb = left_valid ? left_cb : '{default: 8'd129};
-        Lr = left_valid ? left_cr : '{default: 8'd129};
+        Lb  = left_valid ? left_cb : '{default: 8'd129};
+        Lr_ = left_valid ? left_cr : '{default: 8'd129};
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) begin
           pred_cb[r][c] = Lb[r];
-          pred_cr[r][c] = Lr[r];
+          pred_cr[r][c] = Lr_[r];
         end
       end
 
       IntraMBMode_TmPred: begin
-        byte unsigned Tb[0:7], Tr[0:7], Lb[0:7], Lr[0:7];
-        byte unsigned Pb, Pr;
-        Tb = top_valid  ? top_cb  : '{default: 8'd127};
-        Tr = top_valid  ? top_cr  : '{default: 8'd127};
-        Lb = left_valid ? left_cb : '{default: 8'd129};
-        Lr = left_valid ? left_cr : '{default: 8'd129};
-        Pb = topleft_valid ? topleft_cb : (top_valid ? 8'd129 : 8'd127);
-        Pr = topleft_valid ? topleft_cr : (top_valid ? 8'd129 : 8'd127);
+        Tb  = top_valid  ? top_cb  : '{default: 8'd127};
+        Tr_ = top_valid  ? top_cr  : '{default: 8'd127};
+        Lb  = left_valid ? left_cb : '{default: 8'd129};
+        Lr_ = left_valid ? left_cr : '{default: 8'd129};
+        Pb  = topleft_valid ? topleft_cb : (top_valid ? 8'd129 : 8'd127);
+        Pr  = topleft_valid ? topleft_cr : (top_valid ? 8'd129 : 8'd127);
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) begin
           pred_cb[r][c] = clamp8(int'(Lb[r])+int'(Tb[c])-int'(Pb));
-          pred_cr[r][c] = clamp8(int'(Lr[r])+int'(Tr[c])-int'(Pr));
+          pred_cr[r][c] = clamp8(int'(Lr_[r])+int'(Tr_[c])-int'(Pr));
         end
       end
 
