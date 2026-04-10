@@ -1,13 +1,3 @@
-//! VP8 video decoder demonstration application.
-//!
-//! This application reads an IVF file containing VP8-encoded video,
-//! decodes each frame, and displays them in a window using minifb.
-//!
-//! # Controls
-//!
-//! - **F**: Pause/unpause playback
-//! - **N**: Next frame (when paused)
-
 #![allow(dead_code)]
 mod bit;
 mod container;
@@ -18,86 +8,86 @@ mod prediction;
 mod tables;
 mod util;
 
-use std::cell::Cell;
+use bit::BitReader;
+use container::IVFParser;
+use frame::VP8Frame;
+use serde::Serialize;
 
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
-
-use crate::bit::BitReader;
-use crate::container::IVFParser;
-use crate::frame::VP8Frame;
-
-thread_local! {
-    static FRAME_COUNTER: Cell<usize> = Cell::new(0);
+#[derive(Serialize)]
+struct FullDebugRecord {
+    frame_data: Vec<u8>,
+    frame: FrameInfo,
+    macroblocks: Vec<macroblock::MacroblockDebug>,
+    bd0: Vec<bit::BitDecision>,
+    bd1: Vec<bit::BitDecision>,
 }
 
-/// Entry point for the VP8 decoder application.
-///
-/// Reads `args[1]`, decodes VP8 frames, and displays them in a window.
-/// Supports basic playback controls for pausing and frame-by-frame navigation.
+#[derive(Serialize)]
+struct FrameInfo {
+    width: u16,
+    height: u16,
+    part1_off: usize,
+    bd0_idx: usize,
+    ydc: i16,
+    yac: i16,
+    y2dc: i16,
+    y2ac: i16,
+    uvdc: i16,
+    uvac: i16,
+    coeff_probs: [[[[u8; 11]; 3]; 8]; 4],
+    prob_skip_false: Option<u8>,
+    mb_no_skip_coeff: bool,
+}
+
 fn main() {
-    let data = std::fs::read(std::env::args().nth(1).unwrap()).unwrap();
+    let path = std::env::args()
+        .nth(1)
+        .expect("Usage: vp8-debug <file.ivf>");
+    let data = std::fs::read(&path).expect("cannot read file");
     let mut parser = IVFParser::new(&data).unwrap();
 
-    const WIDTH: usize = 1280;
-    const HEIGHT: usize = 720;
+    // Find the first key frame.
+    let frame_data = loop {
+        let frame = parser.next_frame().unwrap().expect("no frames in file");
+        if frame.data[0] & 1 == 0 {
+            break frame.data.to_vec();
+        }
+    };
 
-    let mut window = Window::new(
-        "",
-        WIDTH,
-        HEIGHT,
-        WindowOptions {
-            resize: false,
-            ..Default::default()
+    let mut br = BitReader::new(&frame_data);
+
+    // After parsing the frame header, bit reader will be at the start of partition 1 (residuals)
+    // Actually, VP8Frame::parse stores partition0_len.
+    let mut vp8 = VP8Frame::parse(&mut br).expect("failed to decode frame");
+
+    // Reconstruct pixels and fill debug_data
+    let mut pixels = Vec::new();
+    vp8.decode(&mut pixels);
+
+    // Partition 1 starts after partition 0 header (partition0_len + 10 bytes).
+    let part1_start = vp8.header.partition0_len + 10;
+
+    let full_record = FullDebugRecord {
+        frame_data,
+        frame: FrameInfo {
+            width: vp8.header.width,
+            height: vp8.header.height,
+            part1_off: part1_start,
+            bd0_idx: 0,
+            ydc: vp8.header.ydc,
+            yac: vp8.header.yac,
+            y2dc: vp8.header.y2dc,
+            y2ac: vp8.header.y2ac,
+            uvdc: vp8.header.uvdc,
+            uvac: vp8.header.uvac,
+            coeff_probs: vp8.header.coeff_probs,
+            prob_skip_false: vp8.header.prob_skip_false,
+            mb_no_skip_coeff: vp8.header.mb_no_skip_coeff,
         },
-    )
-    .unwrap();
-    window.set_target_fps((parser.header.framerate_num / parser.header.framerate_den) as usize);
+        macroblocks: vp8.debug_data,
+        bd0: vp8.bd0_log,
+        bd1: vp8.bd1_log,
+    };
 
-    let mut buffer = Vec::new();
-    let mut frames = Vec::new();
-
-    while let Some(frame) = parser.next_frame().unwrap() {
-        println!("Frame PTS: {}, size: {}", frame.pts, frame.data.len());
-        frames.push(frame);
-    }
-
-    let paused = Cell::new(false);
-    let mut frame_iter = frames.iter();
-
-    loop {
-        let mut update = |window: &mut Window| {
-            if let Some(frame) = frame_iter.next() {
-                println!("FrameNumber: {}", FRAME_COUNTER.get());
-                // write_to_wepb("output.webp", frame.data).unwrap();
-                let mut br = BitReader::new(&frame.data);
-                let vp8_frame = VP8Frame::parse(&mut br).unwrap();
-                let (w, h) = vp8_frame.decode(&mut buffer);
-                window.update_with_buffer(&buffer, w, h).unwrap();
-                FRAME_COUNTER.set(FRAME_COUNTER.get() + 1);
-            } else {
-                frame_iter = frames.iter();
-                FRAME_COUNTER.set(0);
-            }
-        };
-
-        if paused.get() {
-            window.update();
-        } else {
-            update(&mut window);
-        }
-
-        if window.is_key_pressed(Key::F, KeyRepeat::Yes) {
-            paused.update(|v| !v);
-        }
-
-        if paused.get() {
-            if window.is_key_pressed(Key::N, KeyRepeat::Yes) {
-                update(&mut window);
-            }
-        }
-
-        if !window.is_open() || window.is_key_pressed(Key::Q, KeyRepeat::Yes) {
-            return;
-        }
-    }
+    println!("{}", serde_json::to_string(&full_record).unwrap());
 }

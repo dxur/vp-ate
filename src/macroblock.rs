@@ -36,11 +36,63 @@
 use strum::FromRepr;
 
 use crate::{
-    bit::{BitError, BitReader, BoolDecoder},
+    bit::{BitDecision, BitError, BitReader, BoolDecoder, BoolDecoderState},
     frame::VP8FrameHeader,
     tables::KF_BMODE_PROB,
     util::{vp8_idct4x4, vp8_iwht4x4},
 };
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockDebug {
+    pub plane: u8,
+    pub has_coeff: bool,
+    pub raw_coeffs: [i32; 16],
+
+    pub bd1_idx_before: usize,
+    pub bd1_range_before: u32,
+    pub bd1_value_before: u32,
+    pub bd1_byte_offset_before: usize,
+
+    pub bd1_idx_after: usize,
+    pub bd1_range_after: u32,
+    pub bd1_value_after: u32,
+    pub bd1_byte_offset_after: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MacroblockDebug {
+    pub col: u16,
+    pub row: u16,
+
+    pub bd0_idx_before: usize,
+    pub bd0_range_before: u32,
+    pub bd0_value_before: u32,
+    pub bd0_byte_offset_before: usize,
+
+    pub mb_skip_coeff: bool,
+    pub intra_y_mode: Option<IntraMBMode>,
+    pub intra_uv_mode: Option<IntraMBMode>,
+    pub sub_modes: Option<[[IntraBMode; 4]; 4]>,
+
+    pub bd1_idx_before: usize,
+    pub bd1_range_before: u32,
+    pub bd1_value_before: u32,
+    pub bd1_byte_offset_before: usize,
+
+    pub blocks: Vec<BlockDebug>,
+
+    pub luma: [[u8; 16]; 16],
+    pub chroma: [[[u8; 8]; 8]; 2],
+    pub y_pixels: [[u8; 16]; 16],
+    pub cb_pixels: [[u8; 8]; 8],
+    pub cr_pixels: [[u8; 8]; 8],
+
+    pub bd1_range_after_final: u32,
+    pub bd1_value_after_final: u32,
+    pub bd1_byte_offset_after_final: usize,
+}
 
 // =============================================================================
 // Intra Prediction Modes
@@ -65,7 +117,7 @@ use crate::{
 ///
 /// For chroma (UV) planes, only the first 4 modes (DC, V, H, TM) are used.
 /// The BPred mode is only applicable to luma and triggers 4x4 sub-block parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr, Serialize)]
 #[repr(i8)]
 pub enum IntraMBMode {
     /// DC Prediction: average of top and left pixels
@@ -154,7 +206,7 @@ const KF_YMODE_TREE: [i8; 2 * (IntraMBMode::NUM_YMODES - 1)] = {
 /// - **Vl**: Vertical-left diagonal (⤢)
 /// - **Hd**: Horizontal-down diagonal (⤵)
 /// - **Hu**: Horizontal-up diagonal (⤴)
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, FromRepr)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, FromRepr, Serialize)]
 #[repr(i8)]
 pub enum IntraBMode {
     /// DC Prediction for 4x4 block
@@ -279,7 +331,7 @@ impl From<BitError> for MacroblockError {
 /// - `intra_y_mode`: Luma (Y) prediction mode
 /// - `sub_modes`: 4x4 sub-block modes (only if intra_y_mode == BPred)
 /// - `intra_uv_mode`: Chroma (UV) prediction mode
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct MacroblockHeader {
     /// If true, skip coefficient parsing (all coefficients are zero).
     pub mb_skip_coeff: bool,
@@ -325,7 +377,7 @@ impl MacroblockHeader {
     ///
     /// A parsed `MacroblockHeader` or an error if parsing fails.
     fn parse<'a, 'b>(
-        blocks: &mut Vec<Macroblock>,
+        blocks: &Vec<Macroblock>,
         frame: &VP8FrameHeader,
         bd: &mut BoolDecoder<'a, 'b>,
     ) -> Result<Self> {
@@ -740,7 +792,26 @@ impl Tokens {
         acq: i16,
         mut complexity: usize,
         bd: &mut BoolDecoder<'a, 'b>,
-    ) -> Result<(Self, bool)> {
+    ) -> Result<(Self, bool, BoolDecoderState, usize)> {
+        macro_rules! rb {
+            ($p:expr) => {{ bd.read_bool($p)? }};
+        }
+
+        macro_rules! read_treed_rec {
+            ($tree:expr, $probs:expr) => {{
+                let tree = &$tree;
+                let probs = $probs;
+                let mut i = 0i8;
+                loop {
+                    let bit = rb!(probs[(i >> 1) as usize]);
+                    i = tree[(i as usize) + bit as usize];
+                    if i <= 0 {
+                        break -i;
+                    }
+                }
+            }};
+        }
+
         let mut block = [0i32; 16];
         let mut has_coeff = false;
         let mut skip = false;
@@ -752,9 +823,9 @@ impl Tokens {
 
             // Use different tree based on whether we've seen a non-zero yet
             let token_repr = if skip {
-                bd.read_treed(&COEFF_TREE_NOEOB, &probs[1..])?
+                read_treed_rec!(COEFF_TREE_NOEOB, &probs[1..])
             } else {
-                bd.read_treed(&COEFF_TREE, probs)?
+                read_treed_rec!(COEFF_TREE, probs)
             };
 
             let token = Token::from_repr(token_repr).unwrap();
@@ -784,7 +855,13 @@ impl Tokens {
                 | Token::DctCat6 => {
                     // Read extra bits to determine exact value in category
                     let probs = token.pcat().unwrap();
-                    let extra = Self::dct_extra(probs, bd)?;
+                    let extra = {
+                        let mut v = 0u32;
+                        for &p in probs {
+                            v = (v << 1) | rb!(p) as u32;
+                        }
+                        v
+                    };
                     CATEGORY_BASE[token as usize - Token::DctCat1 as usize] + extra as i32
                 }
                 _ => unreachable!(),
@@ -811,7 +888,9 @@ impl Tokens {
             block[zigzag as usize] = abs_value * if zigzag == 0 { dcq as i32 } else { acq as i32 };
         }
 
-        Ok((Self(block), has_coeff))
+        let state_after = bd.get_state();
+        let idx_after = bd.count();
+        Ok((Self(block), has_coeff, state_after, idx_after))
     }
 
     /// Reads extra bits for DCT coefficient categories.
@@ -866,15 +945,10 @@ impl Tokens {
 /// ├── Chroma U: 4 blocks (2x2 grid)
 /// └── Chroma V: 4 blocks (2x2 grid)
 /// ```
+/// Complete residual data for a macroblock.
 #[derive(Debug, Clone)]
 pub struct Residuals {
-    /// 16 4x4 blocks of luma (Y) DCT coefficients.
-    /// Stored in raster order (left-to-right, top-to-bottom).
     pub luma: [Tokens; 16],
-
-    /// 4 4x4 blocks each for U and V chroma.
-    /// First array index: 0=U, 1=V
-    /// Second array: 4 blocks in raster order
     pub chroma: [[Tokens; 4]; 2],
 }
 
@@ -927,7 +1001,8 @@ impl Residuals {
         frame: &VP8FrameHeader,
         has_coeff_vec: &mut Vec<(bool, [bool; 4], [[bool; 2]; 2])>,
         bd: &mut BoolDecoder<'a, 'b>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Vec<BlockDebug>)> {
+        let mut debug_blocks = Vec::new();
         let mbx = mb_col as usize + 1; // Index in has_coeff_vec (offset by 1 for left)
 
         let mut y2_has_coeff = false;
@@ -957,7 +1032,9 @@ impl Residuals {
             }
 
             // Parse Y2 block (4x4 of DC values from luma blocks)
-            let (mut residual, has_coeff) = Tokens::parse(
+            let state_before = bd.count();
+            let state_before_full = bd.get_state();
+            let (mut residual, has_coeff, state_after, idx_after) = Tokens::parse(
                 Plane::Y2,
                 &frame.coeff_probs,
                 frame.y2dc,
@@ -965,6 +1042,20 @@ impl Residuals {
                 complexity,
                 bd,
             )?;
+
+            debug_blocks.push(BlockDebug {
+                plane: 1, // Y2
+                has_coeff,
+                raw_coeffs: residual.0,
+                bd1_idx_before: state_before,
+                bd1_range_before: state_before_full.range,
+                bd1_value_before: state_before_full.value,
+                bd1_byte_offset_before: state_before_full.byte_offset,
+                bd1_idx_after: idx_after,
+                bd1_range_after: state_after.range,
+                bd1_value_after: state_after.value,
+                bd1_byte_offset_after: state_after.byte_offset,
+            });
 
             // Inverse Walsh-Hadamard Transform on Y2 block
             vp8_iwht4x4(&mut residual.0);
@@ -993,7 +1084,9 @@ impl Residuals {
                 }
 
                 // Parse luma block
-                let (mut residual, has_coeff) = Tokens::parse(
+                let state_before = bd.count();
+                let state_before_full = bd.get_state();
+                let (mut residual, has_coeff, state_after, idx_after) = Tokens::parse(
                     Plane::Y(y2_has_coeff),
                     &frame.coeff_probs,
                     frame.ydc,
@@ -1001,6 +1094,20 @@ impl Residuals {
                     complexity,
                     bd,
                 )?;
+
+                debug_blocks.push(BlockDebug {
+                    plane: if y2_has_coeff { 0 } else { 3 },
+                    has_coeff,
+                    raw_coeffs: residual.0,
+                    bd1_idx_before: state_before,
+                    bd1_range_before: state_before_full.range,
+                    bd1_value_before: state_before_full.value,
+                    bd1_byte_offset_before: state_before_full.byte_offset,
+                    bd1_idx_after: idx_after,
+                    bd1_range_after: state_after.range,
+                    bd1_value_after: state_after.value,
+                    bd1_byte_offset_after: state_after.byte_offset,
+                });
 
                 // If Y2 exists, replace DC coefficient with Y2 value
                 if let Some(ref luma_dc) = luma_dc {
@@ -1036,7 +1143,9 @@ impl Residuals {
                     }
 
                     // Parse chroma block
-                    let (mut residual, has_coeff) = Tokens::parse(
+                    let state_before = bd.count();
+                    let state_before_full = bd.get_state();
+                    let (mut residual, has_coeff, state_after, idx_after) = Tokens::parse(
                         plane,
                         &frame.coeff_probs,
                         frame.uvdc,
@@ -1044,6 +1153,20 @@ impl Residuals {
                         complexity,
                         bd,
                     )?;
+
+                    debug_blocks.push(BlockDebug {
+                        plane: 2, // UV
+                        has_coeff,
+                        raw_coeffs: residual.0,
+                        bd1_idx_before: state_before,
+                        bd1_range_before: state_before_full.range,
+                        bd1_value_before: state_before_full.value,
+                        bd1_byte_offset_before: state_before_full.byte_offset,
+                        bd1_idx_after: idx_after,
+                        bd1_range_after: state_after.range,
+                        bd1_value_after: state_after.value,
+                        bd1_byte_offset_after: state_after.byte_offset,
+                    });
 
                     // Inverse DCT transform
                     vp8_idct4x4(&mut residual.0);
@@ -1057,7 +1180,7 @@ impl Residuals {
             }
         }
 
-        Ok(Self { luma, chroma })
+        Ok((Self { luma, chroma }, debug_blocks))
     }
 }
 
@@ -1142,13 +1265,14 @@ impl Macroblock {
         frame: &VP8FrameHeader,
         bd: &mut BoolDecoder<'a, 'b>,
         residual_data: &'b [u8],
-    ) -> Result<Vec<Self>> {
+    ) -> Result<(Vec<Self>, Vec<MacroblockDebug>, Vec<BitDecision>)> {
         // Multi-partition mode not yet implemented
         if frame.num_partitions > 1 {
             unimplemented!();
         }
 
         let mut blocks = Vec::new();
+        let mut debugs = Vec::new();
 
         // Context vector: [left, top_0, top_1, ..., top_N]
         // Each entry: (Y2_has_coeff, Y_has_coeff[4], UV_has_coeff[2][2])
@@ -1163,18 +1287,22 @@ impl Macroblock {
         for i in 0..frame.mb_height {
             for j in 0..frame.mb_width {
                 // Parse macroblock header
+                let bd0_idx_before = bd.count();
+                let state_before_header = bd.get_state();
                 let header = MacroblockHeader::parse(&mut blocks, frame, bd)?;
 
                 // Parse residuals (if not skipped)
-                let residue = if !header.mb_skip_coeff {
-                    let r = Residuals::parse(
+                let bd1_idx_before = residual_bd.count();
+                let state_before_residue = residual_bd.get_state();
+                let (residue, debug_blocks) = if !header.mb_skip_coeff {
+                    let (r, db) = Residuals::parse(
                         (i, j, &header),
                         frame,
                         &mut has_coeff_vec,
                         &mut residual_bd,
                     )
                     .inspect_err(|e| panic!("i: {i}, j: {j}, e: {e:?}"))?;
-                    Residue(Some(r))
+                    (Residue(Some(r)), db)
                 } else {
                     // Skip coefficient: reset context appropriately
                     if let Some(IntraMBMode::BPred) = header.intra_y_mode {
@@ -1188,8 +1316,36 @@ impl Macroblock {
                         has_coeff_vec[0] = Default::default();
                         has_coeff_vec[j as usize + 1] = Default::default();
                     }
-                    Residue(None)
+                    (Residue(None), Vec::new())
                 };
+
+                let state_after_residue = residual_bd.get_state();
+
+                debugs.push(MacroblockDebug {
+                    col: j,
+                    row: i,
+                    bd0_idx_before,
+                    bd0_range_before: state_before_header.range,
+                    bd0_value_before: state_before_header.value,
+                    bd0_byte_offset_before: state_before_header.byte_offset,
+                    mb_skip_coeff: header.mb_skip_coeff,
+                    intra_y_mode: header.intra_y_mode,
+                    intra_uv_mode: header.intra_uv_mode,
+                    sub_modes: header.sub_modes,
+                    bd1_idx_before,
+                    bd1_range_before: state_before_residue.range,
+                    bd1_value_before: state_before_residue.value,
+                    bd1_byte_offset_before: state_before_residue.byte_offset,
+                    blocks: debug_blocks,
+                    luma: [[0; 16]; 16], // To be filled during decode
+                    chroma: [[[0; 8]; 8]; 2],
+                    y_pixels: [[0; 16]; 16],
+                    cb_pixels: [[0; 8]; 8],
+                    cr_pixels: [[0; 8]; 8],
+                    bd1_range_after_final: state_after_residue.range,
+                    bd1_value_after_final: state_after_residue.value,
+                    bd1_byte_offset_after_final: state_after_residue.byte_offset,
+                });
 
                 blocks.push(Macroblock {
                     pos: (j, i),
@@ -1200,6 +1356,6 @@ impl Macroblock {
             // Reset left context at start of each row
             has_coeff_vec[0] = Default::default();
         }
-        Ok(blocks)
+        Ok((blocks, debugs, residual_bd.log))
     }
 }

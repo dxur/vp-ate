@@ -1,4 +1,4 @@
-package MacroblockHeaderPkg;
+package Macroblock;
   typedef enum logic [3-1:0] {
     IntraMBMode_DcPred,  /* predict DC using row above and column to the left */
     IntraMBMode_VPred,   /* predict rows using row above */
@@ -28,7 +28,7 @@ package MacroblockHeaderPkg;
     IntraMBMode intra_y_mode;
     SubModes    sub_modes;
     IntraMBMode intra_uv_mode;
-  } MacroblockHeader;
+  } Header;
 
   localparam byte unsigned KF_YMODE_PROB[0:4-1] = '{145, 156, 163, 128};
   localparam byte unsigned KF_UV_MODE_PROB[0:3-1] = '{142, 114, 183};
@@ -38,14 +38,14 @@ package MacroblockHeaderPkg;
   // negative values are the leaf values (modes)
   // we use 8 bits signed integers
   localparam byte signed KF_YMODE_TREE[0:8-1] = '{
-      -(signed'(byte'(IntraMBMode_DcPred))),
+      -(signed'(byte'(IntraMBMode_BPred))),
       2,
       4,
       6,
+      -(signed'(byte'(IntraMBMode_DcPred))),
       -(signed'(byte'(IntraMBMode_VPred))),
       -(signed'(byte'(IntraMBMode_HPred))),
-      -(signed'(byte'(IntraMBMode_TmPred))),
-      -(signed'(byte'(IntraMBMode_BPred)))
+      -(signed'(byte'(IntraMBMode_TmPred)))
   };
 
   localparam byte signed UV_MODE_TREE[0:6-1] = '{
@@ -79,4 +79,3 @@ package MacroblockHeaderPkg;
   };
 
 endpackage
-//# sourceMappingURL=macroblock_pkg.sv.map

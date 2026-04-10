@@ -4,6 +4,7 @@ TOPLEVEL_LANG := verilog
 
 RTL_DIR := rtl
 BASE_RTL := $(shell find $(RTL_DIR) -name "*.sv")
+EXTRA_ARGS += --trace
 
 ifneq ($(EXTRA_RTL),)
 VERILOG_SOURCES := $(EXTRA_RTL)

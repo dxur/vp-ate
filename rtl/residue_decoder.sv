@@ -1,208 +1,158 @@
-// ResidueDecoder - sequences TokenDecoder calls for all sub-blocks of one MB.
-//
-// Consumes one MacroblockHeader at a time and drives a shared TokenDecoder
-// (connected to the part1 BoolDecoder) 25 times in the order:
-//   Y2 (if !BPred),  Y[0..15],  U[0..3],  V[0..3]
-//
-// After all blocks are decoded and IDCT/IWHT applied, it outputs a packed
-// MbResiduals struct containing the transformed 4×4 coefficient arrays.
-//
-// has_coeff_vec context:
-//   - Index 0        : left context  (reset at MB start from left MB's final)
-//   - Index [1..mbw] : top context   (updated per column)
-//   Each entry is:  y2_hc | y_hc[4] | u_hc[2] | v_hc[2]
-//
-// The module does NOT hold the has_coeff_vec itself for all columns -
-// that is the parent's responsibility. Instead the parent passes
-// cur_left/cur_top and receives updated values.
-
 package ResiduePkg;
   typedef struct {
-    shortint signed luma  [0:15][0:15];  // 16 4×4 blocks -> 16×16 pixels
-    shortint signed chroma[0:1][0:7][0:7]; // 2 planes × 8×8
+    shortint signed luma[0:15][0:15];  // 16 4*4 blocks
+    shortint signed chroma[0:1][0:7][0:7];  // 2 planes 8*8
   } MbResiduals;
 endpackage
 
-import MacroblockHeaderPkg::*;
+import Macroblock::*;
 import Frame::*;
 
 module ResidueDecoder (
     input var logic clk,
     input var logic rst,
 
-    // Input: decoded macroblock header
-    input var MacroblockHeaderPkg::MacroblockHeader mb_header,
-    input var logic                                 mb_valid,
-    output var logic                                mb_ready,
+    input var  Macroblock::Header mb_header,
+    input var  logic              mb_valid,
+    output var logic              mb_ready,
 
-    // Frame context (quantizer, coeff probs)
     input var Frame::FrameCtx frame_ctx,
 
-    // has_coeff context from parent (one entry per MB column + left slot)
-    // Packing: {y2_hc, y_hc[3:0], u_hc[1:0], v_hc[1:0]}  = 9 bits
-    input var  logic [8:0] hc_left,         // left context on entry
-    input var  logic [8:0] hc_top,          // top context for current column
-    output var logic [8:0] hc_left_out,     // updated left context
-    output var logic [8:0] hc_top_out,      // updated top context
+    // has_coeff context (9 bits, {y2_hc[8], y_hc[7:4], u_hc[3:2], v_hc[1:0]})
+    input var  logic [8:0] hc_left,
+    input var  logic [8:0] hc_top,
+    output var logic [8:0] hc_left_out,
+    output var logic [8:0] hc_top_out,
 
-    // TokenDecoder interface (shared)
-    output var logic [1:0]     td_plane,
-    output var logic [1:0]     td_complexity,
-    output var logic           td_first_coeff,
-    output var shortint signed td_dcq,
-    output var shortint signed td_acq,
-    output var logic           td_start,
-    input var  logic           td_busy,
-    input var  shortint signed td_coeffs[0:15],
-    input var  logic           td_has_coeff,
-    input var  logic           td_coeff_valid,
+    // TokenDecoder interface
+    output var logic           [1:0] td_plane,
+    output var logic           [1:0] td_complexity,
+    output var logic                 td_first_coeff,
+    output var shortint signed       td_dcq,
+    output var shortint signed       td_acq,
+    output var logic                 td_start,
+    input var  logic                 td_busy,
+    input var  shortint signed       td_coeffs     [0:15],
+    input var  logic                 td_has_coeff,
+    input var  logic                 td_coeff_valid,
 
-    // IDCT interface (shared - parent must mux if >1 MB in flight)
-    output var logic              idct_coeff_valid,
-    input var  logic              idct_coeff_ready,
-    output var shortint signed    idct_coeff[0:3][0:3],
-    input var  logic              wht_coeff_valid,  // tied to idct when wht selected externally
-    output var logic              use_wht,           // 1=IWHT 0=IDCT
+    // IDCT/IWHT interface
+    output var logic           idct_coeff_valid,
+    input var  logic           idct_coeff_ready,
+    output var shortint signed idct_coeff      [0:3][0:3],
+    output var logic           use_wht,
 
-    input var  logic              idct_block_valid,
-    output var logic              idct_block_ready,
-    input var  shortint signed    idct_block[0:3][0:3],
+    input var  logic           idct_block_valid,
+    output var logic           idct_block_ready,
+    input var  shortint signed idct_block      [0:3][0:3],
 
     // Output
     output var ResiduePkg::MbResiduals residuals,
-    output var logic                    res_valid,
-    input var  logic                    res_ready
+    output var logic                   res_valid,
+    input var  logic                   res_ready
 );
 
-  // -------------------------------------------------------------------------
-  // Block sequencing order
-  //   seq 0     : Y2      (only when !BPred)
-  //   seq 1-16  : Y[0..15]
-  //   seq 17-20 : U[0..3]
-  //   seq 21-24 : V[0..3]
-  // -------------------------------------------------------------------------
-  typedef enum logic [4:0] {
-    S_IDLE          = 5'd0,
-    S_START_BLOCK   = 5'd1,   // configure and start TokenDecoder
-    S_WAIT_TOKEN    = 5'd2,   // wait for TokenDecoder to finish
-    S_WAIT_IDCT     = 5'd4,   // push coeffs to IDCT, wait for result
-    S_STORE_BLOCK   = 5'd8,   // store IDCT result into residuals
-    S_STORE_Y2      = 5'd16,  // IWHT result: distribute DCs into luma blocks
-    S_OUT           = 5'd17
+  typedef enum logic [6:0] {
+    S_IDLE        = 'd1,
+    S_START_BLOCK = 'd2,
+    S_WAIT_TOKEN  = 'd4,
+    S_START_IDCT  = 'd8,
+    S_WAIT_IDCT   = 'd16,
+    S_ADVANCE     = 'd32,
+    S_OUT         = 'd64
   } State;
 
-  State        state;
-  logic [4:0]  seq;           // 0-24 (or 1-24 when !BPred)
-  logic        has_y2;        // !BPred -> Y2 present
+  State                 state;
+  logic           [4:0] seq;  // 0=Y2, 1-16=Y, 17-20=U, 21-24=V
+  logic                 has_y2;
+  logic                 skip_coeff;  // mb_skip_coeff: all coeffs zero, no TD calls
 
-  // Y2 raw tokens (pre-IWHT)
-  shortint signed y2_tokens[0:15];
+  // Working copies of context
+  logic           [8:0] hc_l;
+  logic           [8:0] hc_t;
 
-  // Scratch: tokens ready to push to IDCT
-  shortint signed cur_tokens[0:15];
-  logic [1:0]    cur_plane;
-  logic [1:0]    cur_complexity;
-  logic          cur_first_coeff;
-  shortint signed cur_dcq, cur_acq;
+  // Token result latch
+  shortint signed       tok_buf                                                    [0:15];
+  logic                 tok_hc;  // has_coeff for this block
 
-  // has_coeff left/top working copies (match packed layout)
-  // [8:8]=y2, [7:4]=y_hc[3:0], [3:2]=u_hc[1:0], [1:0]=v_hc[1:0]
-  logic [8:0]  hc_l;   // left context
-  logic [8:0]  hc_t;   // top context for current column
+  // Y2 IWHT result (DCs for 16 luma blocks), held until all Y done
+  shortint signed       y2_dc                                                      [ 0:3] [0:3];
 
-  // IDCT push state
-  logic [1:0]  idct_row;
-  logic        idct_push_done;
+  // seq_plane: map seq to plane index (0=Y_ac,1=Y2,2=UV,3=Y_dc+ac)
+  function automatic logic [1:0] seq_plane(input logic [4:0] s, input logic y2p);
+    if (s == 0) return 2'd1;  // Y2
+    else if (s <= 16) return y2p ? 2'd0 : 2'd3;  // Y AC-only or full
+    else return 2'd2;  // U or V
+  endfunction
 
-  // -------------------------------------------------------------------------
-  // Helpers: decode sequence index -> plane parameters
-  // -------------------------------------------------------------------------
-  function automatic void seq_params(
-      input  logic [4:0]  s,
-      input  logic        y2_present,
-      output logic [1:0]  plane,
-      output shortint signed dcq,
-      output shortint signed acq,
-      output logic        first_coeff,
-      output logic [1:0]  blk_xy_y,  // sub-block row (Y only)
-      output logic [1:0]  blk_xy_x   // sub-block col (Y only)
-  );
-    logic [4:0] tmp;
-
-    blk_xy_y   = '0;
-    blk_xy_x   = '0;
-    first_coeff = 1'b0;
-    if (s == 0 && y2_present) begin
-      plane = 2'd1;  // Y2
-      dcq   = frame_ctx.y2dc;
-      acq   = frame_ctx.y2ac;
-    end else if (s >= 1 && s <= 16) begin
-      plane = y2_present ? 2'd0 : 2'd3;  // Y AC-only or Y with DC
-      dcq   = frame_ctx.ydc;
-      acq   = frame_ctx.yac;
-      first_coeff = y2_present ? 1'b1 : 1'b0;
-      tmp = s - 1;
-      blk_xy_y = tmp[3:2];
-      blk_xy_x = tmp[1:0];
-    end else if (s >= 17 && s <= 20) begin
-      plane = 2'd2;  // U
-      dcq   = frame_ctx.uvdc;
-      acq   = frame_ctx.uvac;
+  // seq_quant: map seq to (dcq, acq)
+  function automatic void seq_quant(input logic [4:0] s, output shortint signed dcq,
+                                    output shortint signed acq);
+    if (s == 0) begin
+      dcq = frame_ctx.y2dc;
+      acq = frame_ctx.y2ac;
+    end else if (s <= 16) begin
+      dcq = frame_ctx.ydc;
+      acq = frame_ctx.yac;
     end else begin
-      plane = 2'd2;  // V
-      dcq   = frame_ctx.uvdc;
-      acq   = frame_ctx.uvac;
+      dcq = frame_ctx.uvdc;
+      acq = frame_ctx.uvac;
     end
   endfunction
 
-  // -------------------------------------------------------------------------
-  // Complexity lookup: extract relevant has_coeff bits from hc_t / hc_l
-  // -------------------------------------------------------------------------
-  function automatic logic [1:0] get_complexity(
-      input logic [4:0] s,
-      input logic       y2p,
-      input logic [8:0] hl,
-      input logic [8:0] ht
-  );
-    logic [4:0] tmp;
-    logic [4:0] t;
-    logic [1:0] bx, by;
-    logic bx1;
+  // first_coeff: 1 only for Y blocks when Y2 is present
+  function automatic logic seq_first_coeff(input logic [4:0] s, input logic y2p);
+    return (s >= 1 && s <= 16 && y2p) ? 1'b1 : 1'b0;
+  endfunction
+
+  // Complexity
+  logic y_left[0:3];
+  logic u_left[0:1];
+  logic v_left[0:1];
+
+  function automatic logic [1:0] complexity_for(
+      input logic [4:0] s, input logic y2p, input logic [8:0] hl, input logic [8:0] ht,
+      input logic yl[0:3], input logic ul[0:1], input logic vl[0:1]);
+
     logic top_hc, left_hc;
+    logic [3:0] bi;
+    logic [1:0] brow, bcol, t;
+    logic urow, ucol, vrow, vcol;
 
     if (s == 0 && y2p) begin
       top_hc  = ht[8];
       left_hc = hl[8];
 
     end else if (s >= 1 && s <= 16) begin
-      tmp = s - 1;
-      by  = tmp[3:2];
-      bx  = tmp[1:0];
-
-      top_hc  = ht[4 + bx];
-      left_hc = (bx == 0) ? hl[4 + by] : 1'b0;
+      bi = 4'(s - 1);
+      brow = bi[3:2];
+      bcol = bi[1:0];
+      top_hc = ht[4+bcol];
+      left_hc = (bcol == 0) ? hl[4+brow] : yl[brow];
 
     end else if (s >= 17 && s <= 20) begin
-      t = s - 17;
-      bx1 = t[0];
-
-      top_hc  = ht[3 - (t >> 1)];
-      left_hc = hl[3 - (t >> 1)];
+      t    = 2'(s - 17);
+      urow = t[1];
+      ucol = t[0];
+      top_hc  = ht[2+ucol];
+      left_hc = (ucol == 0) ? hl[2+urow] : ul[urow];
 
     end else begin
-      t = s - 21;
-
-      top_hc  = ht[1 - (t >> 1)];
-      left_hc = hl[1 - (t >> 1)];
+      t    = 2'(s - 21);
+      vrow = t[1];
+      vcol = t[0];
+      top_hc  = ht[4'(vcol)];
+      left_hc = (vcol == 0) ? hl[4'(vrow)] : vl[vrow];
     end
 
-    get_complexity = {1'b0, top_hc} + {1'b0, left_hc};
+    return {1'b0, top_hc} + {1'b0, left_hc};
   endfunction
 
-  // -------------------------------------------------------------------------
-  // Combinational outputs
-  // -------------------------------------------------------------------------
   always_comb begin
+    shortint signed _dcq, _acq;
+    _dcq             = 16'sd0;
+    _acq             = 16'sd0;
+
     mb_ready         = (state == S_IDLE);
     td_start         = 1'b0;
     td_plane         = 2'd0;
@@ -212,35 +162,29 @@ module ResidueDecoder (
     td_acq           = frame_ctx.yac;
     idct_coeff_valid = 1'b0;
     idct_block_ready = 1'b0;
-    use_wht          = 1'b0;
-    idct_coeff       = '{default: '{default: 0}};
-    hc_left_out      = hc_l;
-    hc_top_out       = hc_t;
-    res_valid        = (state == S_OUT);
+    use_wht          = (seq == 5'd0);
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) idct_coeff[r][c] = 16'sd0;
+    hc_left_out = hc_l;
+    hc_top_out  = hc_t;
+    res_valid   = (state == S_OUT);
 
     case (state)
       S_START_BLOCK: begin
-        logic [1:0] _p, _bxy, _bxx;
-        shortint signed _dcq, _acq;
-        logic _fc;
-        seq_params(seq, has_y2, _p, _dcq, _acq, _fc, _bxy, _bxx);
-        td_plane       = _p;
+        seq_quant(seq, _dcq, _acq);
+        td_plane       = seq_plane(seq, has_y2);
         td_dcq         = _dcq;
         td_acq         = _acq;
-        td_first_coeff = _fc;
-        td_complexity  = get_complexity(seq, has_y2, hc_l, hc_t);
-        td_start       = 1'b1;
+        td_first_coeff = seq_first_coeff(seq, has_y2);
+        td_complexity  = complexity_for(seq, has_y2, hc_l, hc_t, y_left, u_left, v_left);
+        td_start       = !skip_coeff && !td_busy;
+      end
+
+      S_START_IDCT: begin
+        idct_coeff_valid = 1'b1;
+        for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) idct_coeff[r][c] = tok_buf[r*4+c];
       end
 
       S_WAIT_IDCT: begin
-        // Push 4×4 coefficient matrix to IDCT row-by-row
-        idct_coeff_valid = !idct_push_done;
-        use_wht          = (seq == 0 && has_y2);
-        for (int c = 0; c < 4; c++)
-          idct_coeff[idct_row][c] = cur_tokens[int'(idct_row)*4 + c];
-      end
-
-      S_STORE_BLOCK, S_STORE_Y2: begin
         idct_block_ready = 1'b1;
       end
 
@@ -248,119 +192,147 @@ module ResidueDecoder (
     endcase
   end
 
-  // -------------------------------------------------------------------------
-  // Sequential
-  // -------------------------------------------------------------------------
-  always_ff @(posedge clk, negedge rst) begin
+  // FSM
+  always_ff @(posedge clk or negedge rst) begin
     if (!rst) begin
       state      <= S_IDLE;
       seq        <= 5'd0;
       has_y2     <= 1'b0;
+      skip_coeff <= 1'b0;
       hc_l       <= 9'd0;
       hc_t       <= 9'd0;
-      idct_row   <= 2'd0;
-      idct_push_done <= 1'b0;
+      tok_hc     <= 1'b0;
       residuals  <= '{default: 0};
-      y2_tokens  <= '{default: 0};
+      for (int i = 0; i < 16; i++) tok_buf[i] <= 16'sd0;
+      for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) y2_dc[r][c] <= 16'sd0;
+      for (int i = 0; i < 4; i++) y_left[i] <= 1'b0;
+      for (int i = 0; i < 2; i++) u_left[i] <= 1'b0;
+      for (int i = 0; i < 2; i++) v_left[i] <= 1'b0;
     end else begin
       case (state)
+
         S_IDLE: begin
           if (mb_valid) begin
-            has_y2 <= (mb_header.intra_y_mode != IntraMBMode_BPred);
-            seq    <= (mb_header.intra_y_mode != IntraMBMode_BPred) ? 5'd0 : 5'd1;
-            hc_l   <= hc_left;
-            hc_t   <= hc_top;
-            residuals <= '{default: 0};
-            state  <= S_START_BLOCK;
+            has_y2     <= (mb_header.intra_y_mode != IntraMBMode_BPred);
+            skip_coeff <= mb_header.mb_skip_coeff;
+            seq        <= (mb_header.intra_y_mode != IntraMBMode_BPred) ? 5'd0 : 5'd1;
+            hc_l       <= hc_left;
+            hc_t       <= hc_top;
+            residuals  <= '{default: 0};
+            for (int i = 0; i < 4; i++) y_left[i] <= 1'b0;
+            for (int i = 0; i < 2; i++) u_left[i] <= 1'b0;
+            for (int i = 0; i < 2; i++) v_left[i] <= 1'b0;
+            state <= S_START_BLOCK;
           end
         end
 
         S_START_BLOCK: begin
-          if (td_start && !td_busy) begin
+          if (skip_coeff) begin
+            // mb_skip_coeff=1: all blocks have zero coefficients, no bitstream bits consumed.
+            for (int i = 0; i < 16; i++) tok_buf[i] <= 16'sd0;
+            tok_hc <= 1'b0;
+            state  <= S_START_IDCT;  // still run IDCT
+          end else if (!td_busy) begin
             state <= S_WAIT_TOKEN;
           end
         end
 
         S_WAIT_TOKEN: begin
           if (td_coeff_valid) begin
-            // Latch token results
-            for (int i = 0; i < 16; i++) cur_tokens[i] <= td_coeffs[i];
-            // Update has_coeff context
-            // (simplified: update y2 bit if seq==0, y bits for seqs 1-16, etc.)
-            // Full context tracking omitted here for brevity - add per-bit later
-            idct_row       <= 2'd0;
-            idct_push_done <= 1'b0;
-            state          <= S_WAIT_IDCT;
+            for (int i = 0; i < 16; i++) tok_buf[i] <= td_coeffs[i];
+            if (seq >= 1 && seq <= 16 && has_y2) begin
+              logic [3:0] bi;
+              logic [1:0] brow, bcol;
+              bi   = 4'(seq - 1);
+              brow = bi[3:2];
+              bcol = bi[1:0];
+              tok_buf[0] <= y2_dc[brow][bcol];
+            end
+            tok_hc <= td_has_coeff;
+            state  <= S_START_IDCT;
           end
+        end
+
+        S_START_IDCT: begin
+          if (idct_coeff_ready) state <= S_WAIT_IDCT;
         end
 
         S_WAIT_IDCT: begin
-          if (idct_coeff_ready && !idct_push_done) begin
-            idct_row <= idct_row + 1'b1;
-            if (idct_row == 3) idct_push_done <= 1'b1;
-          end
-          if (idct_push_done && idct_block_valid) begin
-            if (seq == 0 && has_y2) begin
-              // Store Y2 tokens for IWHT distribution
-              for (int r = 0; r < 4; r++)
-                for (int c = 0; c < 4; c++)
-                  y2_tokens[r*4+c] <= idct_block[r][c];
-              state <= S_STORE_Y2;
-            end else begin
-              state <= S_STORE_BLOCK;
-            end
-          end
-        end
+          if (idct_block_valid) begin
 
-        S_STORE_Y2: begin
-          // Y2 IWHT result: idct_block contains transformed DCs
-          // Distribute back to luma block DC positions
-          for (int r = 0; r < 4; r++)
-            for (int c = 0; c < 4; c++) begin
-              // luma block index r*4+c, position [0][0] (the DC) in its 4×4
-              // In our residuals layout: luma[block_row*4 .. +3][block_col*4 .. +3]
-              residuals.luma[r*4][c*4] <= idct_block[r][c];
-            end
-          // Advance to Y blocks
-          seq   <= 5'd1;
-          state <= S_START_BLOCK;
-        end
-
-        S_STORE_BLOCK: begin
-          // Store IDCT result
-          if (seq >= 1 && seq <= 16) begin
             logic [3:0] bi;
             logic [1:0] brow, bcol;
-            logic [4:0] t;
-            t = s - 1;
-            bi   = t[3:0];
-            brow = bi[3:2];
-            bcol = bi[1:0];
-            for (int r = 0; r < 4; r++)
-              for (int c = 0; c < 4; c++)
-                residuals.luma[brow*4+r][bcol*4+c] <= idct_block[r][c];
-          end else if (seq >= 17 && seq <= 20) begin
-            // U blocks: 2×2 grid, seq 17-20 -> [0][0],[0][1],[1][0],[1][1]
-            logic [1:0] bi;
-            logic [4:0] t;
-            t = s - 17;
-            bi = t[1:0];
-            for (int r = 0; r < 4; r++)
-              for (int c = 0; c < 4; c++)
-                residuals.chroma[0][bi[1]*4+r][bi[0]*4+c] <= idct_block[r][c];
-          end else begin
-            // V blocks: seq 21-24
-            logic [1:0] bi;
-            logic [4:0] t;
-            t = s - 21;
-            bi = t[1:0];
-            for (int r = 0; r < 4; r++)
-              for (int c = 0; c < 4; c++)
-                residuals.chroma[1][bi[1]*4+r][bi[0]*4+c] <= idct_block[r][c];
-          end
+            logic [1:0] t;
+            logic urow, ucol, vrow, vcol;
+            logic [1:0] dbg_row, dbg_col;
 
-          // Advance
-          if (seq == 24) begin
+            if (seq == 5'd0) begin
+              for (int r = 0; r < 4; r++)
+              for (int c = 0; c < 4; c++) y2_dc[r][c] <= idct_block[r][c];
+
+              hc_t[8] <= tok_hc;
+              hc_l[8] <= tok_hc;
+              dbg_row = 0;
+              dbg_col = 0;
+
+            end else if (seq <= 5'd16) begin
+              bi   = 4'(seq - 1);
+              brow = bi[3:2];
+              bcol = bi[1:0];
+
+              for (int r = 0; r < 4; r++)
+              for (int c = 0; c < 4; c++) residuals.luma[brow*4+r][bcol*4+c] <= idct_block[r][c];
+
+              hc_t[4+bcol] <= tok_hc;
+              y_left[brow] <= tok_hc;
+              if (bcol == 3) hc_l[4+brow] <= tok_hc;
+
+              dbg_row = brow;
+              dbg_col = bcol;
+
+            end else if (seq <= 5'd20) begin
+              t    = 2'(seq - 17);
+              urow = t[1];
+              ucol = t[0];
+
+              for (int r = 0; r < 4; r++)
+              for (int c = 0; c < 4; c++)
+              residuals.chroma[0][urow*4+r][ucol*4+c] <= idct_block[r][c];
+
+              hc_t[2+ucol] <= tok_hc;
+              u_left[urow] <= tok_hc;
+              if (ucol == 1) hc_l[2+urow] <= tok_hc;
+
+              dbg_row = {1'b0, urow};
+              dbg_col = {1'b0, ucol};
+
+            end else begin
+              t    = 2'(seq - 21);
+              vrow = t[1];
+              vcol = t[0];
+
+              for (int r = 0; r < 4; r++)
+              for (int c = 0; c < 4; c++)
+              residuals.chroma[1][vrow*4+r][vcol*4+c] <= idct_block[r][c];
+
+              hc_t[{3'd0, vcol}] <= tok_hc;
+              v_left[vrow] <= tok_hc;
+              if (vcol == 1) hc_l[{3'd0, vrow}] <= tok_hc;
+
+              dbg_row = {1'b0, vrow};
+              dbg_col = {1'b0, vcol};
+            end
+
+            //   $display("DBG: SEQ=%0d MB(row=%0d,col=%0d) tok_hc=%b", seq, dbg_row, dbg_col, tok_hc);
+            //   $display("DBG: HC_TOP=%0h HC_LEFT=%0h", hc_t, hc_l);
+            //   $display("DBG: y_left=%b u_left=%b v_left=%b", y_left, u_left, v_left);
+
+            state <= S_ADVANCE;
+          end
+        end
+
+        S_ADVANCE: begin
+          if (seq == 5'd24) begin
             state <= S_OUT;
           end else begin
             seq   <= seq + 1'b1;
@@ -376,5 +348,151 @@ module ResidueDecoder (
       endcase
     end
   end
+
+endmodule
+
+module ResidueDecoderTest (
+    input var logic clk,
+    input var logic rst,
+
+    input var logic [2:0] mb_intra_y_mode,  // IntraMBMode enum
+    input var logic       mb_skip_coeff,
+
+    input var  logic mb_valid,
+    output var logic mb_ready,
+
+    input var shortint signed ydc,
+    input var shortint signed yac,
+    input var shortint signed y2dc,
+    input var shortint signed y2ac,
+    input var shortint signed uvdc,
+    input var shortint signed uvac,
+    input var logic [8447:0] coeff_probs_flat,
+
+    input var  logic [8:0] hc_left,
+    input var  logic [8:0] hc_top,
+    output var logic [8:0] hc_left_out,
+    output var logic [8:0] hc_top_out,
+
+    output var logic [  1:0] td_plane,
+    output var logic [  1:0] td_complexity,
+    output var logic         td_first_coeff,
+    output var logic [ 15:0] td_dcq,
+    output var logic [ 15:0] td_acq,
+    output var logic         td_start,
+    input var  logic         td_busy,
+    input var  logic [255:0] td_coeffs_flat,
+    input var  logic         td_has_coeff,
+    input var  logic         td_coeff_valid,
+
+    output var logic         idct_coeff_valid,
+    input var  logic         idct_coeff_ready,
+    output var logic [255:0] idct_coeff_flat,
+    output var logic         use_wht,
+
+    input var  logic         idct_block_valid,
+    output var logic         idct_block_ready,
+    input var  logic [255:0] idct_block_flat,
+
+    output var logic [4095:0] luma_flat,
+    output var logic [2047:0] chroma_flat,
+
+    output var logic res_valid,
+    input var  logic res_ready
+);
+
+  Macroblock::Header mb_header_s;
+  always_comb begin
+    mb_header_s               = '0;
+    mb_header_s.intra_y_mode  = Macroblock::IntraMBMode'(mb_intra_y_mode);
+    mb_header_s.mb_skip_coeff = mb_skip_coeff;
+  end
+
+  Frame::FrameCtx frame_ctx_s;
+  always_comb begin
+    frame_ctx_s.valid = 1'b1;
+    frame_ctx_s.ydc   = ydc;
+    frame_ctx_s.yac   = yac;
+    frame_ctx_s.y2dc  = y2dc;
+    frame_ctx_s.y2ac  = y2ac;
+    frame_ctx_s.uvdc  = uvdc;
+    frame_ctx_s.uvac  = uvac;
+    for (int pl = 0; pl < 4; pl++)
+    for (int band = 0; band < 8; band++)
+    for (int ctx = 0; ctx < 3; ctx++)
+    for (int tok = 0; tok < 11; tok++) begin
+      automatic int idx;
+      idx = ((pl * 8 + band) * 3 + ctx) * 11 + tok;
+      frame_ctx_s.coeff_probs[pl][band][ctx][tok] = coeff_probs_flat[8447-idx*8-:8];
+    end
+  end
+
+  shortint signed td_coeffs_s[0:15];
+  always_comb begin
+    for (int i = 0; i < 16; i++) td_coeffs_s[i] = shortint'(td_coeffs_flat[i*16+:16]);
+  end
+
+  shortint signed idct_block_s[0:3][0:3];
+  always_comb begin
+    for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 4; c++) idct_block_s[r][c] = shortint'(idct_block_flat[(r*4+c)*16+:16]);
+  end
+
+  shortint signed idct_coeff_s[0:3][0:3];
+  always_comb begin
+    idct_coeff_flat = '0;
+    for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 4; c++) idct_coeff_flat[(r*4+c)*16+:16] = 16'(idct_coeff_s[r][c]);
+  end
+
+  shortint signed td_dcq_s, td_acq_s;
+  always_comb begin
+    td_dcq = 16'(td_dcq_s);
+    td_acq = 16'(td_acq_s);
+  end
+
+  ResiduePkg::MbResiduals residuals_s;
+  always_comb begin
+    luma_flat   = '0;
+    chroma_flat = '0;
+    for (int r = 0; r < 16; r++)
+    for (int c = 0; c < 16; c++) luma_flat[(r*16+c)*16+:16] = 16'(residuals_s.luma[r][c]);
+    for (int p = 0; p < 2; p++)
+    for (int r = 0; r < 8; r++)
+    for (int c = 0; c < 8; c++) chroma_flat[(p*64+r*8+c)*16+:16] = 16'(residuals_s.chroma[p][r][c]);
+  end
+
+  ResidueDecoder uut (
+      .clk             (clk),
+      .rst             (rst),
+      .mb_header       (mb_header_s),
+      .mb_valid        (mb_valid),
+      .mb_ready        (mb_ready),
+      .frame_ctx       (frame_ctx_s),
+      .hc_left         (hc_left),
+      .hc_top          (hc_top),
+      .hc_left_out     (hc_left_out),
+      .hc_top_out      (hc_top_out),
+      .td_plane        (td_plane),
+      .td_complexity   (td_complexity),
+      .td_first_coeff  (td_first_coeff),
+      .td_dcq          (td_dcq_s),
+      .td_acq          (td_acq_s),
+      .td_start        (td_start),
+      .td_busy         (td_busy),
+      .td_coeffs       (td_coeffs_s),
+      .td_has_coeff    (td_has_coeff),
+      .td_coeff_valid  (td_coeff_valid),
+      .idct_coeff_valid(idct_coeff_valid),
+      .idct_coeff_ready(idct_coeff_ready),
+      .idct_coeff      (idct_coeff_s),
+      .use_wht         (use_wht),
+      .idct_block_valid(idct_block_valid),
+      .idct_block_ready(idct_block_ready),
+      .idct_block      (idct_block_s),
+      .residuals       (residuals_s),
+      .res_valid       (res_valid),
+      .res_ready       (res_ready)
+  );
 
 endmodule

@@ -117,6 +117,9 @@ pub struct VP8Frame {
     pub header: VP8FrameHeader,
     /// Macroblocks containing the compressed image data.
     pub macroblocks: Vec<Macroblock>,
+    pub debug_data: Vec<crate::macroblock::MacroblockDebug>,
+    pub bd0_log: Vec<crate::bit::BitDecision>,
+    pub bd1_log: Vec<crate::bit::BitDecision>,
 }
 
 impl VP8Frame {
@@ -348,11 +351,15 @@ impl VP8Frame {
         };
 
         let offset = partition0_len + 10;
-        let macroblocks = Macroblock::parse(&header, &mut bd, &data[offset..])?;
+        let (macroblocks, debug_data, bd1_log) =
+            Macroblock::parse(&header, &mut bd, &data[offset..])?;
 
         Ok(Self {
             header,
             macroblocks,
+            debug_data,
+            bd0_log: bd.log,
+            bd1_log,
         })
     }
 }

@@ -1,17 +1,3 @@
-// FrameBuffer - stores one decoded VP8 frame as packed YUV bytes.
-//
-// Layout (row-major, each pixel = 3 bytes Y, Cb, Cr):
-//   address = row * width + col
-//   Y  stored at base + addr
-//   Cb stored at base_cb + (row/2)*cbw + (col/2)  where cbw = (width+1)/2
-//   Cr stored at base_cr + (row/2)*crw + (col/2)
-//
-// For simplicity we use three flat arrays (Y, Cb, Cr) with subsampled
-// chroma (4:2:0). Width/height must be set via parameters.
-//
-// Write port: one macroblock (16×16 Y + 8×8 Cb + 8×8 Cr) per transaction.
-// Read port:  edge extraction for the predictor.
-
 module FrameBuffer #(
     parameter int unsigned MAX_WIDTH  = 1920,
     parameter int unsigned MAX_HEIGHT = 1080
@@ -19,48 +5,43 @@ module FrameBuffer #(
     input var logic clk,
     input var logic rst,
 
-    // Actual frame dimensions (set once before decoding starts)
     input var shortint unsigned width,
     input var shortint unsigned height,
 
-    // Write port: one MB worth of pixels
-    input var logic         wr_valid,
-    output var logic        wr_ready,
-    input var byte unsigned wr_mb_col,   // macroblock column index
-    input var byte unsigned wr_mb_row,   // macroblock row index
-    input var byte unsigned wr_y [0:15][0:15],
-    input var byte unsigned wr_cb[0:7][0:7],
-    input var byte unsigned wr_cr[0:7][0:7],
+    input var  logic         wr_valid,
+    output var logic         wr_ready,
+    input var  byte unsigned wr_mb_col,              // macroblock column index
+    input var  byte unsigned wr_mb_row,              // macroblock row index
+    input var  byte unsigned wr_y     [0:15][0:15],
+    input var  byte unsigned wr_cb    [ 0:7][ 0:7],
+    input var  byte unsigned wr_cr    [ 0:7][ 0:7],
 
-    // Read port: edge pixels for predictor
-    // Provide the 4 edge arrays for the MB at (rd_mb_col, rd_mb_row)
-    input var byte unsigned  rd_mb_col,
-    input var byte unsigned  rd_mb_row,
-    output var byte unsigned rd_top_y [0:15],
-    output var byte unsigned rd_top_cb[0:7],
-    output var byte unsigned rd_top_cr[0:7],
-    output var byte unsigned rd_left_y [0:15],
-    output var byte unsigned rd_left_cb[0:7],
-    output var byte unsigned rd_left_cr[0:7],
+    input var  byte unsigned rd_mb_col,
+    input var  byte unsigned rd_mb_row,
+    output var byte unsigned rd_top_y         [0:15],
+    output var byte unsigned rd_top_cb        [ 0:7],
+    output var byte unsigned rd_top_cr        [ 0:7],
+    output var byte unsigned rd_left_y        [0:15],
+    output var byte unsigned rd_left_cb       [ 0:7],
+    output var byte unsigned rd_left_cr       [ 0:7],
     output var byte unsigned rd_topleft_y,
     output var byte unsigned rd_topleft_cb,
     output var byte unsigned rd_topleft_cr,
-    output var byte unsigned rd_topright_y[0:3],
+    output var byte unsigned rd_topright_y    [ 0:3],
     output var logic         rd_top_valid,
     output var logic         rd_left_valid,
     output var logic         rd_topleft_valid,
     output var logic         rd_topright_valid
 );
 
-  localparam int unsigned LUMA_SIZE   = MAX_WIDTH * MAX_HEIGHT;
-  localparam int unsigned CHROMA_SIZE = (MAX_WIDTH/2) * (MAX_HEIGHT/2);
+  localparam int unsigned LUMA_SIZE = MAX_WIDTH * MAX_HEIGHT;
+  localparam int unsigned CHROMA_SIZE = (MAX_WIDTH / 2) * (MAX_HEIGHT / 2);
 
-  byte unsigned luma_buf  [0:LUMA_SIZE-1];
-  byte unsigned cb_buf    [0:CHROMA_SIZE-1];
-  byte unsigned cr_buf    [0:CHROMA_SIZE-1];
+  byte unsigned luma_buf[  0:LUMA_SIZE-1];
+  byte unsigned cb_buf  [0:CHROMA_SIZE-1];
+  byte unsigned cr_buf  [0:CHROMA_SIZE-1];
 
-  // -- Write --
-  always_comb wr_ready = 1'b1;  // always accept (no backpressure in simulation)
+  always_comb wr_ready = 1'b1;
 
   always_ff @(posedge clk) begin
     if (wr_valid) begin
@@ -89,38 +70,34 @@ module FrameBuffer #(
     end
   end
 
-  // -- Read (combinational) --
   always_comb begin
-    rd_top_valid     = (rd_mb_row > 0);
-    rd_left_valid    = (rd_mb_col > 0);
-    rd_topleft_valid = (rd_mb_row > 0 && rd_mb_col > 0);
-    rd_topright_valid = (rd_mb_row > 0 &&
-                         (int'(rd_mb_col)+1)*16+4 < int'(width));
+    rd_top_valid      = (rd_mb_row > 0);
+    rd_left_valid     = (rd_mb_col > 0);
+    rd_topleft_valid  = (rd_mb_row > 0 && rd_mb_col > 0);
+    rd_topright_valid = (rd_mb_row > 0 && (int'(rd_mb_col) + 1) * 16 + 4 < int'(width));
 
-    // Defaults
-    rd_top_y      = '{default: 8'd127};
-    rd_top_cb     = '{default: 8'd127};
-    rd_top_cr     = '{default: 8'd127};
-    rd_left_y     = '{default: 8'd129};
-    rd_left_cb    = '{default: 8'd129};
-    rd_left_cr    = '{default: 8'd129};
-    rd_topleft_y  = 8'd127;
-    rd_topleft_cb = 8'd127;
-    rd_topleft_cr = 8'd127;
-    rd_topright_y = '{default: 8'd127};
+    rd_top_y          = '{default: 8'd127};
+    rd_top_cb         = '{default: 8'd127};
+    rd_top_cr         = '{default: 8'd127};
+    rd_left_y         = '{default: 8'd129};
+    rd_left_cb        = '{default: 8'd129};
+    rd_left_cr        = '{default: 8'd129};
+    rd_topleft_y      = 8'd127;
+    rd_topleft_cb     = 8'd127;
+    rd_topleft_cr     = 8'd127;
+    rd_topright_y     = '{default: 8'd127};
 
     if (rd_top_valid) begin
       automatic int unsigned top_row, left_col, cw;
       top_row  = (int'(rd_mb_row) - 1) * 16 + 15;
       left_col = int'(rd_mb_col) * 16;
       cw       = (int'(width) + 1) / 2;
-      for (int c = 0; c < 16; c++)
-        rd_top_y[c] = luma_buf[top_row * int'(width) + left_col + c];
+      for (int c = 0; c < 16; c++) rd_top_y[c] = luma_buf[top_row*int'(width)+left_col+c];
       for (int c = 0; c < 8; c++) begin
         automatic int unsigned cr2, cc2, a;
         cr2 = (int'(rd_mb_row) - 1) * 8 + 7;
         cc2 = int'(rd_mb_col) * 8 + c;
-        a   = cr2 * cw + cc2;
+        a = cr2 * cw + cc2;
         rd_top_cb[c] = cb_buf[a];
         rd_top_cr[c] = cr_buf[a];
       end
@@ -128,8 +105,7 @@ module FrameBuffer #(
         automatic int unsigned trb, trc;
         trb = top_row;
         trc = (int'(rd_mb_col) + 1) * 16;
-        for (int c = 0; c < 4; c++)
-          rd_topright_y[c] = luma_buf[trb * int'(width) + trc + c];
+        for (int c = 0; c < 4; c++) rd_topright_y[c] = luma_buf[trb*int'(width)+trc+c];
       end
     end
 
@@ -138,13 +114,12 @@ module FrameBuffer #(
       mb_row_pix = int'(rd_mb_row) * 16;
       left_col   = int'(rd_mb_col) * 16 - 1;
       cw         = (int'(width) + 1) / 2;
-      for (int r = 0; r < 16; r++)
-        rd_left_y[r] = luma_buf[(mb_row_pix + r) * int'(width) + left_col];
+      for (int r = 0; r < 16; r++) rd_left_y[r] = luma_buf[(mb_row_pix+r)*int'(width)+left_col];
       for (int r = 0; r < 8; r++) begin
         automatic int unsigned cr2, cc2, a;
         cr2 = int'(rd_mb_row) * 8 + r;
         cc2 = int'(rd_mb_col) * 8 - 1;
-        a   = cr2 * cw + cc2;
+        a = cr2 * cw + cc2;
         rd_left_cb[r] = cb_buf[a];
         rd_left_cr[r] = cr_buf[a];
       end
@@ -152,14 +127,14 @@ module FrameBuffer #(
 
     if (rd_topleft_valid) begin
       automatic int unsigned tl_row, tl_col, cw, tl_cb_row, tl_cb_col;
-      tl_row    = (int'(rd_mb_row) - 1) * 16 + 15;
-      tl_col    = int'(rd_mb_col) * 16 - 1;
-      cw        = (int'(width) + 1) / 2;
-      rd_topleft_y  = luma_buf[tl_row * int'(width) + tl_col];
-      tl_cb_row = (int'(rd_mb_row) - 1) * 8 + 7;
-      tl_cb_col = int'(rd_mb_col) * 8 - 1;
-      rd_topleft_cb = cb_buf[tl_cb_row * cw + tl_cb_col];
-      rd_topleft_cr = cr_buf[tl_cb_row * cw + tl_cb_col];
+      tl_row        = (int'(rd_mb_row) - 1) * 16 + 15;
+      tl_col        = int'(rd_mb_col) * 16 - 1;
+      cw            = (int'(width) + 1) / 2;
+      rd_topleft_y  = luma_buf[tl_row*int'(width)+tl_col];
+      tl_cb_row     = (int'(rd_mb_row) - 1) * 8 + 7;
+      tl_cb_col     = int'(rd_mb_col) * 8 - 1;
+      rd_topleft_cb = cb_buf[tl_cb_row*cw+tl_cb_col];
+      rd_topleft_cr = cr_buf[tl_cb_row*cw+tl_cb_col];
     end
   end
 

@@ -7,7 +7,32 @@
 //! VP8 uses arithmetic coding for most of its entropy-coded data, which allows
 //! for more efficient compression than simple bit-level encoding.
 
+use serde::Serialize;
 use std::fmt;
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct BitDecision {
+    pub prob: u8,
+    pub bit: u8,
+}
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct BlockDebug {
+    pub plane: u8,
+    pub has_coeff: bool,
+    pub raw_coeffs: [i32; 16],
+    pub bd1_idx_after: usize,
+    pub bd1_range_after: u32,
+    pub bd1_value_after: u32,
+    pub bd1_byte_offset_after: usize,
+}
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct BoolDecoderState {
+    pub range: u32,
+    pub value: u32,
+    pub byte_offset: usize,
+}
 
 /// Errors that can occur during bit reading or boolean decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +227,7 @@ pub struct BoolDecoder<'a, 'b> {
     range: u32,
     value: u32,
     bit_count: i32,
+    pub log: Vec<BitDecision>,
 }
 
 impl<'a, 'b> BoolDecoder<'a, 'b> {
@@ -221,7 +247,20 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
             range: 255,
             value,
             bit_count: 0,
+            log: Vec::new(),
         })
+    }
+
+    pub fn get_state(&self) -> BoolDecoderState {
+        BoolDecoderState {
+            range: self.range,
+            value: self.value,
+            byte_offset: self.br.byte_pos,
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.log.len()
     }
 
     /// Reads a boolean with 50/50 probability (probability = 128).
@@ -256,6 +295,8 @@ impl<'a, 'b> BoolDecoder<'a, 'b> {
             retval = 0;
             self.range = split;
         }
+
+        self.log.push(BitDecision { prob, bit: retval });
 
         while self.range < 128 {
             self.value <<= 1;

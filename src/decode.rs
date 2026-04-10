@@ -22,7 +22,7 @@ impl VP8Frame {
     /// # Returns
     ///
     /// A tuple containing the width and height of the decoded frame
-    pub fn decode(self, buf: &mut Vec<u32>) -> (usize, usize) {
+    pub fn decode(&mut self, buf: &mut Vec<u32>) -> (usize, usize) {
         let mbw = self.header.mb_width as usize;
         let w = self.header.width as usize;
         let h = self.header.height as usize;
@@ -53,7 +53,17 @@ impl VP8Frame {
                     &mut top_right,
                 );
                 // Decode the macroblock using edge contexts
-                let plane = mb.decode(&top, &left, &top_left, &top_right);
+                let (plane, residuals) =
+                    mb.decode_with_residuals(&top, &left, &top_left, &top_right);
+
+                // Update debug data
+                let d = &mut self.debug_data[i * mbw + j];
+                d.luma = residuals.0;
+                d.chroma = residuals.1;
+                d.y_pixels = plane.0;
+                d.cb_pixels = plane.1[0];
+                d.cr_pixels = plane.1[1];
+
                 // Apply the decoded macroblock to the buffer
                 Self::apply(j, i, w, plane, buf);
             }
@@ -275,23 +285,131 @@ impl Macroblock {
         top_left: &Option<(u8, [u8; 2])>,
         top_right: &Option<Option<[u8; 4]>>,
     ) -> ([[u8; 16]; 16], [[[u8; 8]; 8]; 2]) {
-        let luma = self.predict_luma(
+        self.decode_with_residuals(top, left, top_left, top_right).0
+    }
+
+    pub fn decode_with_residuals(
+        &self,
+        top: &Option<([u8; 16], [[u8; 8]; 2])>,
+        left: &Option<([u8; 16], [[u8; 8]; 2])>,
+        top_left: &Option<(u8, [u8; 2])>,
+        top_right: &Option<Option<[u8; 4]>>,
+    ) -> (
+        ([[u8; 16]; 16], [[[u8; 8]; 8]; 2]),
+        ([[u8; 16]; 16], [[[u8; 8]; 8]; 2]),
+    ) {
+        let (luma_pixels, luma_residuals) = self.predict_luma_with_residuals(
             &top.map(|v| v.0),
             &left.map(|v| v.0),
             &top_left.map(|v| v.0),
             top_right,
         );
 
-        // (luma, [[[128u8; 8]; 8]; 2])
-
-        let chroma = self.predict_chroma(
+        let (chroma_pixels, chroma_residuals) = self.predict_chroma_with_residuals(
             &top.map(|v| v.1),
             &left.map(|v| v.1),
             &top_left.map(|v| v.1),
         );
 
-        // ([[128u8; 16]; 16], chroma)
-        (luma, chroma)
+        (
+            (luma_pixels, chroma_pixels),
+            (luma_residuals, chroma_residuals),
+        )
+    }
+
+    fn predict_luma_with_residuals(
+        &self,
+        top: &Option<[u8; 16]>,
+        left: &Option<[u8; 16]>,
+        top_left: &Option<u8>,
+        top_right: &Option<Option<[u8; 4]>>,
+    ) -> ([[u8; 16]; 16], [[u8; 16]; 16]) {
+        let r = MayBeTokens(self.residue.0.as_ref().map(|v| &v.luma));
+        let mode = self
+            .header
+            .intra_y_mode
+            .expect("Only intra mode supported for now");
+
+        let mut residuals = [[0u8; 16]; 16];
+        if let Some(tokens) = r.0 {
+            for i in 0..4 {
+                for j in 0..4 {
+                    let block = &tokens[i * 4 + j].0;
+                    for y in 0..4 {
+                        for x in 0..4 {
+                            residuals[i * 4 + y][j * 4 + x] = block[y * 4 + x] as u8;
+                        }
+                    }
+                }
+            }
+        }
+
+        let prediction = match mode {
+            IntraMBMode::DcPred => predict_dcpred(top, left),
+            IntraMBMode::VPred => predict_vpred(top),
+            IntraMBMode::HPred => predict_hpred(left),
+            IntraMBMode::TmPred => predict_tmpred(top, left, top_left),
+            IntraMBMode::BPred => self.b_pred(top, left, top_left, top_right),
+        };
+
+        (r + prediction, residuals)
+    }
+
+    fn predict_chroma_with_residuals(
+        &self,
+        top: &Option<[[u8; 8]; 2]>,
+        left: &Option<[[u8; 8]; 2]>,
+        top_left: &Option<[u8; 2]>,
+    ) -> ([[[u8; 8]; 8]; 2], [[[u8; 8]; 8]; 2]) {
+        let tu = &top.map(|v| v[0]);
+        let tv = &top.map(|v| v[1]);
+        let lu = &left.map(|v| v[0]);
+        let lv = &left.map(|v| v[1]);
+        let tlu = &top_left.map(|v| v[0]);
+        let tlv = &top_left.map(|v| v[1]);
+
+        let [upred, vpred] = match self
+            .header
+            .intra_uv_mode
+            .expect("Only intra mode supported for now")
+        {
+            IntraMBMode::DcPred => [predict_dcpred(tu, lu), predict_dcpred(tv, lv)],
+            IntraMBMode::VPred => [predict_vpred(tu), predict_vpred(tv)],
+            IntraMBMode::HPred => [predict_hpred(lu), predict_hpred(lv)],
+            IntraMBMode::TmPred => [predict_tmpred(tu, lu, tlu), predict_tmpred(tv, lv, tlv)],
+            _ => unreachable!(),
+        };
+
+        let ru = MayBeTokens(self.residue.0.as_ref().map(|v| &v.chroma[0]));
+        let rv = MayBeTokens(self.residue.0.as_ref().map(|v| &v.chroma[1]));
+
+        let mut residuals = [[[0u8; 8]; 8]; 2];
+        if let Some(tokens) = ru.0 {
+            for i in 0..2 {
+                for j in 0..2 {
+                    let block = &tokens[i * 2 + j].0;
+                    for y in 0..4 {
+                        for x in 0..4 {
+                            residuals[0][i * 4 + y][j * 4 + x] = block[y * 4 + x] as u8;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(tokens) = rv.0 {
+            for i in 0..2 {
+                for j in 0..2 {
+                    let block = &tokens[i * 2 + j].0;
+                    for y in 0..4 {
+                        for x in 0..4 {
+                            residuals[1][i * 4 + y][j * 4 + x] = block[y * 4 + x] as u8;
+                        }
+                    }
+                }
+            }
+        }
+
+        ([ru + upred, rv + vpred], residuals)
     }
 
     /// Predicts the luma (brightness) plane of a macroblock.
