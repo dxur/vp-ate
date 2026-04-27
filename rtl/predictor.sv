@@ -2,8 +2,8 @@ import Macroblock::*;
 import ResiduePkg::*;
 
 package PredictorPkg;
-  typedef byte unsigned Luma[0:15][0:15];
-  typedef byte unsigned Chroma[0:7][0:7];
+  typedef logic [7:0] Luma[0:15][0:15];
+  typedef logic [7:0] Chroma[0:7][0:7];
 
   typedef struct {
     logic  valid;
@@ -15,16 +15,16 @@ endpackage
 
 // avg2(a,b)   = (a + b + 1) >> 1
 // avg3(a,b,c) = (a + 2b + c + 2) >> 2
-function automatic byte unsigned avg2(input byte unsigned a, b);
-  avg2 = byte'(({1'b0, a} + {1'b0, b} + 9'd1) >> 1);
+function automatic logic [7:0] avg2(input logic [7:0] a, b);
+  avg2 = 8'(({1'b0, a} + {1'b0, b} + 9'd1) >> 1);
 endfunction
 
-function automatic byte unsigned avg3(input byte unsigned a, b, c);
-  avg3 = byte'(({2'b0, a} + {2'b0, b} + {2'b0, b} + {2'b0, c} + 10'd2) >> 2);
+function automatic logic [7:0] avg3(input logic [7:0] a, b, c);
+  avg3 = 8'(({2'b0, a} + {2'b0, b} + {2'b0, b} + {2'b0, c} + 10'd2) >> 2);
 endfunction
 
-function automatic byte unsigned clamp8(input int signed v);
-  clamp8 = (v < 0) ? 8'd0 : (v > 255) ? 8'd255 : byte'(v);
+function automatic logic [7:0] clamp8(input int signed v);
+  clamp8 = (v < 0) ? 8'd0 : (v > 255) ? 8'd255 : 8'(v);
 endfunction
 
 module Predictor (
@@ -35,31 +35,31 @@ module Predictor (
     input var ResiduePkg::MbResiduals residuals,
 
     // Edge pixels from frame buffer (all optional; 0 = unavailable)
-    input var logic         top_valid,
-    input var byte unsigned top_y    [0:15],  // row above luma
-    input var byte unsigned top_cb   [ 0:7],
-    input var byte unsigned top_cr   [ 0:7],
+    input var logic       top_valid,
+    input var logic [7:0] top_y    [0:15],  // row above luma
+    input var logic [7:0] top_cb   [ 0:7],
+    input var logic [7:0] top_cr   [ 0:7],
 
-    input var logic         left_valid,
-    input var byte unsigned left_y    [0:15],  // column to the left
-    input var byte unsigned left_cb   [ 0:7],
-    input var byte unsigned left_cr   [ 0:7],
+    input var logic       left_valid,
+    input var logic [7:0] left_y    [0:15],  // column to the left
+    input var logic [7:0] left_cb   [ 0:7],
+    input var logic [7:0] left_cr   [ 0:7],
 
-    input var logic         topleft_valid,
-    input var byte unsigned topleft_y,
-    input var byte unsigned topleft_cb,
-    input var byte unsigned topleft_cr,
+    input var logic       topleft_valid,
+    input var logic [7:0] topleft_y,
+    input var logic [7:0] topleft_cb,
+    input var logic [7:0] topleft_cr,
 
-    input var logic         topright_valid,
-    input var byte unsigned topright_y    [0:3], // 4 pixels top-right of current MB
+    input var logic       topright_valid,
+    input var logic [7:0] topright_y    [0:3], // 4 pixels top-right of current MB
 
     // Output reconstructed MB
     output var PredictorPkg::MbPixels pixels
 );
 
   // MB level DC prediction - N=16 for luma, N=8 for chroma
-  function automatic byte unsigned dc_pred16(input logic tv, lv, input byte unsigned T[0:15],
-                                             input byte unsigned L[0:15]);
+  function automatic logic [7:0] dc_pred16(input logic tv, lv, input logic [7:0] T[0:15],
+                                           input logic [7:0] L[0:15]);
     int unsigned sum;
     int unsigned cnt;
     sum = 0;
@@ -80,14 +80,14 @@ module Predictor (
       tv, lv
     })
       2'b00: dc_pred16 = 8'd128;
-      2'b10: dc_pred16 = byte'((sum + 8) >> 4);
-      2'b01: dc_pred16 = byte'((sum + 8) >> 4);
-      2'b11: dc_pred16 = byte'((sum + 16) >> 5);
+      2'b10: dc_pred16 = 8'((sum + 8) >> 4);
+      2'b01: dc_pred16 = 8'((sum + 8) >> 4);
+      2'b11: dc_pred16 = 8'((sum + 16) >> 5);
     endcase
   endfunction
 
-  function automatic byte unsigned dc_pred8(input logic tv, lv, input byte unsigned T[0:7],
-                                            input byte unsigned L[0:7]);
+  function automatic logic [7:0] dc_pred8(input logic tv, lv, input logic [7:0] T[0:7],
+                                          input logic [7:0] L[0:7]);
     int unsigned sum;
     sum = 0;
     if (tv) begin
@@ -100,15 +100,15 @@ module Predictor (
       tv, lv
     })
       2'b00: dc_pred8 = 8'd128;
-      2'b10: dc_pred8 = byte'((sum + 4) >> 3);
-      2'b01: dc_pred8 = byte'((sum + 4) >> 3);
-      2'b11: dc_pred8 = byte'((sum + 8) >> 4);
+      2'b10: dc_pred8 = 8'((sum + 4) >> 3);
+      2'b01: dc_pred8 = 8'((sum + 4) >> 3);
+      2'b11: dc_pred8 = 8'((sum + 8) >> 4);
     endcase
   endfunction
 
   // 4*4 DC (BDcPred: avg of top[4] + left[4], always has some)
-  function automatic byte unsigned dc_pred4(input logic tv, lv, input byte unsigned T[0:3],
-                                            input byte unsigned L[0:3]);
+  function automatic logic [7:0] dc_pred4(input logic tv, lv, input logic [7:0] T[0:3],
+                                          input logic [7:0] L[0:3]);
     int unsigned sum;
     sum = 4;  // rounding
     if (tv) begin
@@ -117,18 +117,18 @@ module Predictor (
     if (lv) begin
       for (int i = 0; i < 4; i++) sum += 32'(L[i]);
     end
-    dc_pred4 = byte'(sum >> 3);
+    dc_pred4 = 8'(sum >> 3);
   endfunction
 
   // Luma prediction - 16*16
   PredictorPkg::Luma pred_y;  // predicted before residual add
 
   always_comb begin
-    byte unsigned _dc16;
-    byte unsigned _row_val[0:15];
-    byte unsigned _col_val[0:15];
-    byte unsigned _T16[0:15], _L16[0:15];
-    byte unsigned _P16;
+    logic [7:0] _dc16;
+    logic [7:0] _row_val[0:15];
+    logic [7:0] _col_val[0:15];
+    logic [7:0] _T16[0:15], _L16[0:15];
+    logic [7:0] _P16;
     _dc16    = 8'd128;
     _row_val = '{default: 8'd127};
     _col_val = '{default: 8'd129};
@@ -187,12 +187,12 @@ module Predictor (
       for (int brow = 0; brow < 4; brow++) begin
         for (int bcol = 0; bcol < 4; bcol++) begin
           // Local edges for this 4*4 sub-block, initialized here to avoid latch inference
-          byte unsigned T4 [0:3];
-          byte unsigned L4 [0:3];
-          byte unsigned TL;
-          byte unsigned TR4[0:3];
+          logic [7:0] T4 [0:3];
+          logic [7:0] L4 [0:3];
+          logic [7:0] TL;
+          logic [7:0] TR4[0:3];
           logic t_avail, l_avail, tl_avail, tr_avail;
-          byte unsigned pred4[0:3][0:3];
+          logic [7:0] pred4[0:3][0:3];
           Macroblock::IntraBMode mode;
 
           // Defaults to prevent latch inference
@@ -262,7 +262,11 @@ module Predictor (
           predict_4x4(pred4, mode, T4, L4, TL, TR4);
 
           for (int r = 0; r < 4; r++)
-          for (int c = 0; c < 4; c++) b_pred_block[brow*4+r][bcol*4+c] = pred4[r][c];
+          for (int c = 0; c < 4; c++) begin
+            automatic int signed p = int'({1'b0, pred4[r][c]});
+            automatic int signed res = int'(residuals.luma[brow*4+r][bcol*4+c]);
+            b_pred_block[brow*4+r][bcol*4+c] = clamp8(p + res);
+          end
         end
       end
     end
@@ -270,23 +274,22 @@ module Predictor (
   /* verilator lint_on LATCH */
 
   // 4*4 prediction dispatch function return value via output argument
-  function automatic void predict_4x4(output byte unsigned out[0:3][0:3],
-                                      input Macroblock::IntraBMode mode, input byte unsigned T[0:3],
-                                      input byte unsigned L[0:3], input byte unsigned TL,
-                                      input byte unsigned TR[0:3]);
-    byte unsigned a_ext[0:7];
-    byte unsigned dc;
-    byte unsigned row_v[0:3];
-    byte unsigned col_v[0:3];
-    byte unsigned e[0:8];
-    byte unsigned lv[0:3];
+  function automatic void predict_4x4(
+      output logic [7:0] out[0:3][0:3], input Macroblock::IntraBMode mode, input logic [7:0] T[0:3],
+      input logic [7:0] L[0:3], input logic [7:0] TL, input logic [7:0] TR[0:3]);
+    logic [7:0] a_ext[0:7];
+    logic [7:0] dc;
+    logic [7:0] row_v[0:3];
+    logic [7:0] col_v[0:3];
+    logic [7:0] e[0:8];
+    logic [7:0] lv[0:3];
 
     out = '{default: '{default: 8'd128}};
 
     case (mode)
       // BDcPred
       IntraBMode_BDcPred: begin
-        dc = byte'((int'(T[0])+int'(T[1])+int'(T[2])+int'(T[3])+
+        dc = 8'((int'(T[0])+int'(T[1])+int'(T[2])+int'(T[3])+
                     int'(L[0])+int'(L[1])+int'(L[2])+int'(L[3])+4) >> 3);
         for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) out[r][c] = dc;
       end
@@ -476,10 +479,10 @@ module Predictor (
   PredictorPkg::Chroma pred_cb, pred_cr;
 
   always_comb begin
-    byte unsigned dc_b, dc_r;
-    byte unsigned Tb[0:7], Tr_[0:7];
-    byte unsigned Lb[0:7], Lr_[0:7];
-    byte unsigned Pb, Pr;
+    logic [7:0] dc_b, dc_r;
+    logic [7:0] Tb[0:7], Tr_[0:7];
+    logic [7:0] Lb[0:7], Lr_[0:7];
+    logic [7:0] Pb, Pr;
 
     Tb = '{default: 8'd127};
     Tr_ = '{default: 8'd127};
@@ -548,12 +551,13 @@ module Predictor (
     // Luma
     for (int r = 0; r < 16; r++)
     for (int c = 0; c < 16; c++) begin
-      automatic int signed pred_val;
-      automatic int signed res_val;
-      if (header.intra_y_mode == IntraMBMode_BPred) pred_val = int'({1'b0, b_pred_block[r][c]});
-      else pred_val = int'({1'b0, pred_y[r][c]});
-      res_val = int'(residuals.luma[r][c]);
-      pixels.y[r][c] = clamp8(pred_val + res_val);
+      if (header.intra_y_mode == IntraMBMode_BPred) begin
+        pixels.y[r][c] = b_pred_block[r][c];
+      end else begin
+        automatic int signed pred_val = int'({1'b0, pred_y[r][c]});
+        automatic int signed res_val = int'(residuals.luma[r][c]);
+        pixels.y[r][c] = clamp8(pred_val + res_val);
+      end
     end
 
     // Chroma Cb

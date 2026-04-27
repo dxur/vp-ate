@@ -1,7 +1,7 @@
 package ResiduePkg;
   typedef struct {
-    shortint signed luma[0:15][0:15];  // 16 4*4 blocks
-    shortint signed chroma[0:1][0:7][0:7];  // 2 planes 8*8
+    logic signed [15:0] luma[16][16];
+    logic signed [15:0] chroma[2][8][8];
   } MbResiduals;
 endpackage
 
@@ -25,31 +25,31 @@ module ResidueDecoder (
     output var logic [8:0] hc_top_out,
 
     // TokenDecoder interface
-    output var logic           [1:0] td_plane,
-    output var logic           [1:0] td_complexity,
-    output var logic                 td_first_coeff,
-    output var shortint signed       td_dcq,
-    output var shortint signed       td_acq,
-    output var logic                 td_start,
-    input var  logic                 td_busy,
-    input var  shortint signed       td_coeffs     [0:15],
-    input var  logic                 td_has_coeff,
-    input var  logic                 td_coeff_valid,
+    output logic        [ 1:0] td_plane,
+    output logic        [ 1:0] td_complexity,
+    output logic               td_first_coeff,
+    output logic signed [15:0] td_dcq,
+    output logic signed [15:0] td_acq,
+    output logic               td_start,
+    input  logic               td_busy,
+    input  logic signed [15:0] td_coeffs     [0:15],
+    input  logic               td_has_coeff,
+    input  logic               td_coeff_valid,
 
     // IDCT/IWHT interface
-    output var logic           idct_coeff_valid,
-    input var  logic           idct_coeff_ready,
-    output var shortint signed idct_coeff      [0:3][0:3],
-    output var logic           use_wht,
+    output logic               idct_coeff_valid,
+    input  logic               idct_coeff_ready,
+    output logic signed [15:0] idct_coeff      [0:3][0:3],
+    output logic               use_wht,
 
-    input var  logic           idct_block_valid,
-    output var logic           idct_block_ready,
-    input var  shortint signed idct_block      [0:3][0:3],
+    input  logic               idct_block_valid,
+    output logic               idct_block_ready,
+    input  logic signed [15:0] idct_block      [0:3][0:3],
 
     // Output
-    output var ResiduePkg::MbResiduals residuals,
-    output var logic                   res_valid,
-    input var  logic                   res_ready
+    output ResiduePkg::MbResiduals residuals,
+    output logic                   res_valid,
+    input  logic                   res_ready
 );
 
   typedef enum logic [6:0] {
@@ -62,21 +62,21 @@ module ResidueDecoder (
     S_OUT         = 'd64
   } State;
 
-  State                 state;
-  logic           [4:0] seq;  // 0=Y2, 1-16=Y, 17-20=U, 21-24=V
-  logic                 has_y2;
-  logic                 skip_coeff;  // mb_skip_coeff: all coeffs zero, no TD calls
+  State               state;
+  logic        [ 4:0] seq;  // 0=Y2, 1-16=Y, 17-20=U, 21-24=V
+  logic               has_y2;
+  logic               skip_coeff;  // mb_skip_coeff: all coeffs zero, no TD calls
 
   // Working copies of context
-  logic           [8:0] hc_l;
-  logic           [8:0] hc_t;
+  logic        [ 8:0] hc_l;
+  logic        [ 8:0] hc_t;
 
   // Token result latch
-  shortint signed       tok_buf                                                    [0:15];
-  logic                 tok_hc;  // has_coeff for this block
+  logic signed [15:0] tok_buf                                                    [0:15];
+  logic               tok_hc;  // has_coeff for this block
 
   // Y2 IWHT result (DCs for 16 luma blocks), held until all Y done
-  shortint signed       y2_dc                                                      [ 0:3] [0:3];
+  logic signed [15:0] y2_dc                                                      [ 0:3] [0:3];
 
   // seq_plane: map seq to plane index (0=Y_ac,1=Y2,2=UV,3=Y_dc+ac)
   function automatic logic [1:0] seq_plane(input logic [4:0] s, input logic y2p);
@@ -86,8 +86,8 @@ module ResidueDecoder (
   endfunction
 
   // seq_quant: map seq to (dcq, acq)
-  function automatic void seq_quant(input logic [4:0] s, output shortint signed dcq,
-                                    output shortint signed acq);
+  function automatic void seq_quant(input logic [4:0] s, output logic signed [15:0] dcq,
+                                    output logic signed [15:0] acq);
     if (s == 0) begin
       dcq = frame_ctx.y2dc;
       acq = frame_ctx.y2ac;
@@ -149,7 +149,7 @@ module ResidueDecoder (
   endfunction
 
   always_comb begin
-    shortint signed _dcq, _acq;
+    logic signed [15:0] _dcq, _acq;
     _dcq             = 16'sd0;
     _acq             = 16'sd0;
 
@@ -202,7 +202,6 @@ module ResidueDecoder (
       hc_l       <= 9'd0;
       hc_t       <= 9'd0;
       tok_hc     <= 1'b0;
-      residuals  <= '{default: 0};
       for (int i = 0; i < 16; i++) tok_buf[i] <= 16'sd0;
       for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) y2_dc[r][c] <= 16'sd0;
       for (int i = 0; i < 4; i++) y_left[i] <= 1'b0;
@@ -218,7 +217,6 @@ module ResidueDecoder (
             seq        <= (mb_header.intra_y_mode != IntraMBMode_BPred) ? 5'd0 : 5'd1;
             hc_l       <= hc_left;
             hc_t       <= hc_top;
-            residuals  <= '{default: 0};
             for (int i = 0; i < 4; i++) y_left[i] <= 1'b0;
             for (int i = 0; i < 2; i++) u_left[i] <= 1'b0;
             for (int i = 0; i < 2; i++) v_left[i] <= 1'b0;

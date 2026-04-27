@@ -10,19 +10,19 @@ module TokenDecoder (
 
     BoolDecoderIf.user bd,
 
-    input var logic           [1:0] plane,
-    input var logic           [1:0] complexity,
-    input var logic                 first_coeff,
-    input var shortint signed       dcq,
-    input var shortint signed       acq,
-    input var Frame::FrameCtx       frame_ctx,
+    input logic           [ 1:0] plane,
+    input logic           [ 1:0] complexity,
+    input logic                  first_coeff,
+    input logic signed    [15:0] dcq,
+    input logic signed    [15:0] acq,
+    input Frame::FrameCtx        frame_ctx,
 
-    input var  logic start,
-    output var logic busy,
+    input  logic start,
+    output logic busy,
 
-    output var shortint signed coeffs     [0:15],
-    output var logic           has_coeff,
-    output var logic           coeff_valid
+    output logic signed [15:0] coeffs     [0:15],
+    output logic               has_coeff,
+    output logic               coeff_valid
 );
 
   // COEFF_BANDS[16]
@@ -74,7 +74,7 @@ module TokenDecoder (
   endfunction
 
   // COEFF_TREE
-  function automatic byte signed coeff_tree(input logic [4:0] idx);
+  function automatic logic signed [7:0] coeff_tree(input logic [4:0] idx);
     case (idx)
       5'd0: coeff_tree = -8'sd11;
       5'd1: coeff_tree = 8'sd2;
@@ -103,7 +103,7 @@ module TokenDecoder (
   endfunction
 
   // COEFF_TREE_NOEOB
-  function automatic byte signed coeff_tree_noeob(input logic [4:0] idx);
+  function automatic logic signed [7:0] coeff_tree_noeob(input logic [4:0] idx);
     case (idx)
       5'd0: coeff_tree_noeob = -8'sd0;
       5'd1: coeff_tree_noeob = 8'sd2;
@@ -142,7 +142,7 @@ module TokenDecoder (
     endcase
   endfunction
 
-  function automatic shortint signed cat_base(input logic [2:0] cat_idx);
+  function automatic logic signed [15:0] cat_base(input logic [2:0] cat_idx);
     case (cat_idx)
       3'd0: cat_base = 16'sd5;
       3'd1: cat_base = 16'sd7;
@@ -155,7 +155,7 @@ module TokenDecoder (
   endfunction
 
   // PCAT probability lookup: pcat[cat_idx][bit_idx]
-  function automatic byte unsigned pcat_prob(input logic [2:0] cat_idx, input logic [3:0] bit_idx);
+  function automatic logic [7:0] pcat_prob(input logic [2:0] cat_idx, input logic [3:0] bit_idx);
     // PCAT1
     if (cat_idx == 3'd0) begin
       case (bit_idx)
@@ -227,48 +227,48 @@ module TokenDecoder (
     S_DONE        = 4'd7   // assert coeff_valid for one cycle
   } State;
 
-  State                  state;
+  State               state;
 
   // Registered inputs (latched on start)
-  logic           [ 1:0] r_plane;
-  logic           [ 1:0] r_complexity;
-  logic           [ 1:0] r_init_complexity;
-  logic                  r_first_coeff;
-  shortint signed        r_dcq;
-  shortint signed        r_acq;
+  logic        [ 1:0] r_plane;
+  logic        [ 1:0] r_complexity;
+  logic        [ 1:0] r_init_complexity;
+  logic               r_first_coeff;
+  logic signed [15:0] r_dcq;
+  logic signed [15:0] r_acq;
 
   // Working registers
-  logic           [ 3:0] coeff_i;  // current coefficient index (0..15)
-  logic           [ 3:0] r_zigzag;  // zigzag[coeff_i]
-  logic           [ 2:0] r_band;  // coeff_band[coeff_i]
-  logic                  r_skip;  // skip flag (true after Dct0 token seen)
-  logic                  r_has_coeff;
+  logic        [ 3:0] coeff_i;  // current coefficient index (0..15)
+  logic        [ 3:0] r_zigzag;  // zigzag[coeff_i]
+  logic        [ 2:0] r_band;  // coeff_band[coeff_i]
+  logic               r_skip;  // skip flag (true after Dct0 token seen)
+  logic               r_has_coeff;
 
   // Tree walk
-  byte signed            tree_node;  // current tree node (signed)
-  logic                  bd_req_pend;
+  logic signed [ 7:0] tree_node;  // current tree node (signed)
+  logic               bd_req_pend;
 
   // Current token (decoded from tree walk)
-  logic           [ 3:0] r_token;  // 0..11
-  logic                  r_is_cat;  // token is DctCat1..6
-  logic           [ 2:0] r_cat_idx;  // 0=Cat1..5=Cat6
+  logic        [ 3:0] r_token;  // 0..11
+  logic               r_is_cat;  // token is DctCat1..6
+  logic        [ 2:0] r_cat_idx;  // 0=Cat1..5=Cat6
 
   // Pcat extra bits
-  logic           [ 3:0] r_pcat_len;  // number of extra bits to read
-  logic           [ 3:0] r_pcat_bit;  // current bit index (counts down from pcat_len-1)
-  logic           [10:0] r_pcat_accum;  // accumulated extra bits (MSB first, up to 11 bits)
+  logic        [ 3:0] r_pcat_len;  // number of extra bits to read
+  logic        [ 3:0] r_pcat_bit;  // current bit index (counts down from pcat_len-1)
+  logic        [10:0] r_pcat_accum;  // accumulated extra bits (MSB first, up to 11 bits)
 
   // Coefficient accumulator before dequant
-  shortint signed        r_abs_val;  // absolute value of coefficient
+  logic signed [15:0] r_abs_val;  // absolute value of coefficient
 
   // Output register
-  shortint signed        r_coeffs                                                           [0:15];
+  logic signed [15:0] r_coeffs                                                           [0:15];
 
   // Probability selection
   // The node register holds the current tree position
   // For COEFF_TREE: prob index = node[4:1]  (node>>1), range 0..10
   // For COEFF_TREE_NOEOB: prob index = node[4:1] + 1 (because probs[1..])
-  function automatic logic [3:0] prob_idx_for_node(input byte signed node, input logic skip);
+  function automatic logic [3:0] prob_idx_for_node(input logic signed [7:0] node, input logic skip);
     if (skip)
       // COEFF_TREE_NOEOB: prob = probs[1 + node>>1]
       prob_idx_for_node = 4'(node[4:1]) + 4'd1;
@@ -287,7 +287,8 @@ module TokenDecoder (
     bd_val = r_band;
     cx = r_complexity[1:0];
     pidx = prob_idx_for_node(tree_node, r_skip);
-    if (pidx < 4'd11) cur_prob = frame_ctx.coeff_probs[pl][bd_val][cx[1:0]][pidx[3:0]];
+    if (pidx < 4'd11)
+      cur_prob = frame_ctx.coeff_probs[int'(pl)*264 + int'(bd_val)*33 + int'(cx[1:0])*11 + int'(pidx[3:0])];
     else cur_prob = 8'd128;
   end
 
@@ -404,7 +405,7 @@ module TokenDecoder (
         // Prob is selected combinationally via cur_prob.
         S_WALK_TOKEN: begin
           if (bd.data_valid && bd_req_pend) begin
-            automatic byte signed child;
+            automatic logic signed [7:0] child;
 
             if (r_skip) begin
               // COEFF_TREE_NOEOB: index = node + bit
@@ -434,7 +435,7 @@ module TokenDecoder (
 
                 // Dct1..4: literal value
               end else if (tok <= 4'd4) begin
-                r_abs_val <= shortint'(tok);  // value = token (1,2,3,4)
+                r_abs_val <= 16'(tok);  // value = token (1,2,3,4)
                 r_is_cat  <= 1'b0;
                 state     <= S_SIGN;
 
@@ -470,7 +471,7 @@ module TokenDecoder (
               // Last bit compute final abs value
               automatic logic [10:0] final_accum;
               final_accum = {r_pcat_accum[9:0], bd.data};
-              r_abs_val <= cat_base(r_cat_idx) + shortint'(final_accum);
+              r_abs_val <= cat_base(r_cat_idx) + 16'(final_accum);
               state     <= S_SIGN;
             end else begin
               r_pcat_bit <= r_pcat_bit + 4'd1;
@@ -484,10 +485,10 @@ module TokenDecoder (
         // Update complexity: 0 if abs==0, 1 if abs==1, 2 otherwise
         S_SIGN: begin
           if (bd.data_valid && bd_req_pend) begin
-            automatic shortint signed       signed_val;
-            automatic shortint signed       dequant_val;
-            automatic shortint signed       q;
-            automatic logic           [3:0] zz;
+            automatic logic signed [15:0] signed_val;
+            automatic logic signed [15:0] dequant_val;
+            automatic logic signed [15:0] q;
+            automatic logic        [ 3:0] zz;
 
             signed_val = bd.data ? -r_abs_val : r_abs_val;
 
@@ -554,18 +555,18 @@ module TokenDecoderTest
 
     input var logic [8447:0] coeff_probs_flat,
 
-    input var logic           [1:0] plane,
-    input var logic           [1:0] complexity,
-    input var logic                 first_coeff,
-    input var shortint signed       dcq,
-    input var shortint signed       acq,
+    input logic        [ 1:0] plane,
+    input logic        [ 1:0] complexity,
+    input logic               first_coeff,
+    input logic signed [15:0] dcq,
+    input logic signed [15:0] acq,
 
-    input var  logic start,
-    output var logic busy,
+    input  logic start,
+    output logic busy,
 
-    output var shortint signed coeffs     [0:15],
-    output var logic           has_coeff,
-    output var logic           coeff_valid
+    output logic signed [15:0] coeffs     [0:15],
+    output logic               has_coeff,
+    output logic               coeff_valid
 );
   BoolDecoderIf bd ();
 
@@ -603,7 +604,7 @@ module TokenDecoderTest
     for (int tok = 0; tok < 11; tok++) begin
       automatic int idx;
       idx = ((pl * 8 + band) * 3 + ctx) * 11 + tok;
-      frame_ctx.coeff_probs[pl][band][ctx][tok] = coeff_probs_flat[8447-idx*8-:8];
+      frame_ctx.coeff_probs[idx] = coeff_probs_flat[8447-idx*8-:8];
     end
   end
 

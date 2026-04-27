@@ -29,12 +29,12 @@ module BoolDecoder (
     input var logic clk,
     input var logic rst,
 
-    input var  logic              mem_ready,
-    output var logic              mem_valid,
-    input var  logic              mem_data_valid,
-    output var logic              mem_data_ready,
-    input var  byte unsigned      mem_data,
-               BoolDecoderIf.self self
+    input var  logic                    mem_ready,
+    output var logic                    mem_valid,
+    input var  logic                    mem_data_valid,
+    output var logic                    mem_data_ready,
+    input var  logic              [7:0] mem_data,
+               BoolDecoderIf.self       self
 );
   logic [32-1:0] value;
   logic [32-1:0] range;
@@ -173,19 +173,19 @@ module BoolDecoder (
 endmodule
 
 module BoolDecoderTest (
-    input var  logic                 clk,
-    input var  logic                 rst,
-    input var  logic                 mem_ready,
-    output var logic                 mem_valid,
-    input var  logic                 mem_data_valid,
-    output var logic                 mem_data_ready,
-    input var  byte unsigned         mem_data,
-    output var logic                 self_ready,
-    input var  logic                 self_valid,
-    input var  logic         [8-1:0] self_prob,
-    input var  logic                 self_data_ready,
-    output var logic                 self_data_valid,
-    output var logic                 self_data
+    input var  logic         clk,
+    input var  logic         rst,
+    input var  logic         mem_ready,
+    output var logic         mem_valid,
+    input var  logic         mem_data_valid,
+    output var logic         mem_data_ready,
+    input var  logic [  7:0] mem_data,
+    output var logic         self_ready,
+    input var  logic         self_valid,
+    input var  logic [8-1:0] self_prob,
+    input var  logic         self_data_ready,
+    output var logic         self_data_valid,
+    output var logic         self_data
 );
   BoolDecoderIf self ();
 

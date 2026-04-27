@@ -1,29 +1,29 @@
 import Macroblock::*;
 
 package Frame;
-  typedef byte unsigned Prob;
-  typedef Prob CoeffProbs[4][8][3][11];
+  typedef logic [7:0] Prob;
+  typedef Prob CoeffProbs[1056];
 
   typedef struct {
-    logic             valid;
-    longint unsigned  part1_off;  // byte offset of residual partition in ring
-    shortint unsigned width;
-    shortint unsigned height;
-    byte unsigned     h_scale;
-    byte unsigned     v_scale;
-    shortint unsigned mb_width;
-    shortint unsigned mb_height;
-    shortint signed   ydc;
-    shortint signed   yac;
-    shortint signed   y2dc;
-    shortint signed   y2ac;
-    shortint signed   uvdc;
-    shortint signed   uvac;
+    logic               valid;
+    logic [63:0]        part1_off;  // byte offset of residual partition in ring
+    logic [15:0]        width;
+    logic [15:0]        height;
+    logic [7:0]         h_scale;
+    logic [7:0]         v_scale;
+    logic [15:0]        mb_width;
+    logic [15:0]        mb_height;
+    logic signed [15:0] ydc;
+    logic signed [15:0] yac;
+    logic signed [15:0] y2dc;
+    logic signed [15:0] y2ac;
+    logic signed [15:0] uvdc;
+    logic signed [15:0] uvac;
 
     CoeffProbs coeff_probs;
 
-    logic         mb_no_skip_coeff;
-    byte unsigned prob_skip_false;
+    logic       mb_no_skip_coeff;
+    logic [7:0] prob_skip_false;
   } FrameCtx;
 
   typedef struct packed {
@@ -37,9 +37,9 @@ module FrameHeaderParser (
     input var logic rst,
 
     // sequential drain, bytes 0-9
-    input var  byte unsigned raw_data,
-    input var  logic         raw_valid,
-    output var logic         raw_ready,
+    input  logic [7:0] raw_data,
+    input  logic       raw_valid,
+    output logic       raw_ready,
 
     // BoolDecoder interface for part0 header (bytes 10+)
     BoolDecoderIf.user bd,
@@ -50,14 +50,14 @@ module FrameHeaderParser (
 );
 
   // Quantizer table lookup helpers (clamp index to [0,127])
-  function automatic shortint signed dc_quant(input int signed idx);
+  function automatic logic signed [15:0] dc_quant(input int signed idx);
     automatic int c = (idx < 0) ? 0 : (idx > 127) ? 127 : idx;
-    dc_quant = shortint'(Tables::DC_QUANT[c]);
+    dc_quant = 16'(Tables::DC_QUANT[c]);
   endfunction
 
-  function automatic shortint signed ac_quant(input int signed idx);
+  function automatic logic signed [15:0] ac_quant(input int signed idx);
     automatic int c = (idx < 0) ? 0 : (idx > 127) ? 127 : idx;
-    ac_quant = shortint'(Tables::AC_QUANT[c]);
+    ac_quant = 16'(Tables::AC_QUANT[c]);
   endfunction
 
   typedef enum logic [5:0] {
@@ -149,12 +149,11 @@ module FrameHeaderParser (
       if (bit_cnt > 0 && !bd_req_pending) bd.valid = 1'b1;
       // bd.prob 128
 
-      // Coeff prob loop
       S_BD_COEFFPROB: begin
         if (!bd_req_pending) bd.valid = 1'b1;
         bd.prob = cp_reading_prob
                   ? 8'd128
-                  : Tables::COEFF_UPDATE_PROBS[cp_plane][cp_band][cp_ctx][cp_tok];
+                  : Tables::COEFF_UPDATE_PROBS_FLAT[int'(cp_plane)*264 + int'(cp_band)*33 + int'(cp_ctx)*11 + int'(cp_tok)];
       end
 
       default: ;
@@ -166,8 +165,8 @@ module FrameHeaderParser (
     if (!rst) begin
       state           <= S_TAG0;
       done_r          <= 1'b0;
-      ctx             <= '{default: '0};
-      ctx.coeff_probs <= Tables::DEFAULT_COEFF_PROBS;
+      ctx.valid       <= 1'b0;
+      ctx.coeff_probs <= Tables::DEFAULT_COEFF_PROBS_FLAT;
 
       bd_req_pending  <= 1'b0;
       bit_acc         <= '0;
@@ -230,8 +229,7 @@ module FrameHeaderParser (
         if (raw_valid) begin
           ctx.h_scale  <= {6'b0, raw_data[7:6]};
           ctx.width    <= {2'b0, raw_data[5:0], raw_lo};
-          ctx.mb_width <= shortint'(16'(
-              {raw_data[5:0], raw_lo} + 14'd15) >> 4);
+          ctx.mb_width <= 16'({raw_data[5:0], raw_lo} + 14'd15) >> 4;
           state <= S_DIM2;
         end
 
@@ -247,8 +245,8 @@ module FrameHeaderParser (
         if (raw_valid) begin
           ctx.v_scale   <= {6'b0, raw_data[7:6]};
           ctx.height    <= {2'b0, raw_data[5:0], raw_lo};
-          ctx.mb_height <= shortint'(16'({raw_data[5:0], raw_lo} + 14'd15) >> 4);
-          ctx.part1_off <= longint'(partition0_len) + 64'd10;
+          ctx.mb_height <= 16'({raw_data[5:0], raw_lo} + 14'd15) >> 4;
+          ctx.part1_off <= 64'(partition0_len) + 64'd10;
           state         <= S_BD_CS;
         end
 
@@ -408,8 +406,8 @@ module FrameHeaderParser (
               // Compute base quantizers; deltas will be added in QDELTA states.
               ctx.ydc  <= dc_quant(qi);
               ctx.yac  <= ac_quant(qi);
-              ctx.y2dc <= shortint'(int'(dc_quant(qi)) * 2);
-              ctx.y2ac <= shortint'((int'(ac_quant(qi)) * 155) / 100);
+              ctx.y2dc <= 16'(int'(dc_quant(qi)) * 2);
+              ctx.y2ac <= 16'((int'(ac_quant(qi)) * 155) / 100);
               ctx.uvdc <= dc_quant(qi);
               ctx.uvac <= ac_quant(qi);
             end
@@ -435,15 +433,15 @@ module FrameHeaderParser (
               begin
                 automatic int qi = int'({1'b0, yac_qi});
                 ctx.ydc  <= dc_quant(qi + int'(qdeltas[0]));
-                ctx.y2dc <= shortint'(int'(dc_quant(qi + int'(qdeltas[1]))) * 2);
-                ctx.y2ac <= shortint'((int'(ac_quant(qi + int'(qdeltas[2]))) * 155) / 100);
+                ctx.y2dc <= 16'(int'(dc_quant(qi + int'(qdeltas[1]))) * 2);
+                ctx.y2ac <= 16'((int'(ac_quant(qi + int'(qdeltas[2]))) * 155) / 100);
                 begin
-                  automatic shortint uvdc_v = dc_quant(qi + int'(qdeltas[3]));
-                  ctx.uvdc <= (uvdc_v < shortint'(8)) ? shortint'(8) : uvdc_v;
+                  automatic logic signed [15:0] uvdc_v = dc_quant(qi + int'(qdeltas[3]));
+                  ctx.uvdc <= (uvdc_v < 16'sd8) ? 16'sd8 : uvdc_v;
                 end
                 begin
-                  automatic shortint uvac_v = ac_quant(qi + int'(qdeltas[4]));
-                  ctx.uvac <= (uvac_v > shortint'(132)) ? shortint'(132) : uvac_v;
+                  automatic logic signed [15:0] uvac_v = ac_quant(qi + int'(qdeltas[4]));
+                  ctx.uvac <= (uvac_v > 16'sd132) ? 16'sd132 : uvac_v;
                 end
                 ctx.yac <= ac_quant(qi);  // yac base: no delta applied
               end
@@ -478,15 +476,15 @@ module FrameHeaderParser (
                 d4 = sgn4 ? -(signed'({1'b0, mag4})) : signed'({1'b0, mag4});
 
                 ctx.ydc  <= dc_quant(qi + int'(qdeltas[0]));
-                ctx.y2dc <= shortint'(int'(dc_quant(qi + int'(qdeltas[1]))) * 2);
-                ctx.y2ac <= shortint'((int'(ac_quant(qi + int'(qdeltas[2]))) * 155) / 100);
+                ctx.y2dc <= 16'(int'(dc_quant(qi + int'(qdeltas[1]))) * 2);
+                ctx.y2ac <= 16'((int'(ac_quant(qi + int'(qdeltas[2]))) * 155) / 100);
                 begin
-                  automatic shortint uvdc_v = dc_quant(qi + int'(qdeltas[3]));
-                  ctx.uvdc <= (uvdc_v < shortint'(8)) ? shortint'(8) : uvdc_v;
+                  automatic logic signed [15:0] uvdc_v = dc_quant(qi + int'(qdeltas[3]));
+                  ctx.uvdc <= (uvdc_v < 16'sd8) ? 16'sd8 : uvdc_v;
                 end
                 begin
-                  automatic shortint uvac_v = ac_quant(qi + int'(d4));
-                  ctx.uvac <= (uvac_v > shortint'(132)) ? shortint'(132) : uvac_v;
+                  automatic logic signed [15:0] uvac_v = ac_quant(qi + int'(d4));
+                  ctx.uvac <= (uvac_v > 16'sd132) ? 16'sd132 : uvac_v;
                 end
                 ctx.yac <= ac_quant(qi);
               end
@@ -539,7 +537,9 @@ module FrameHeaderParser (
             bit_cnt <= bit_cnt - 4'd1;
             if (bit_cnt == 4'd1) begin
               // All 8 bits received: {bit_acc[6:0], bd.data}
-              ctx.coeff_probs[cp_plane][cp_band][cp_ctx][cp_tok] <= {bit_acc[6:0], bd.data};
+              ctx.coeff_probs[int'(cp_plane)*264+int'(cp_band)*33+int'(cp_ctx)*11+int'(cp_tok)] <= {
+                bit_acc[6:0], bd.data
+              };
               cp_reading_prob <= 1'b0;
               // Advance
               if (cp_tok == 4'd10) begin

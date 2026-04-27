@@ -1,11 +1,11 @@
 interface Idct4x4If;
-  logic           coeff_ready;
-  logic           coeff_valid;
-  shortint signed coeff       [0:4-1][0:4-1];
+  logic               coeff_ready;
+  logic               coeff_valid;
+  logic signed [15:0] coeff       [0:4-1][0:4-1];
 
-  logic           block_ready;
-  logic           block_valid;
-  shortint signed block       [0:4-1][0:4-1];
+  logic               block_ready;
+  logic               block_valid;
+  logic signed [15:0] block       [0:4-1][0:4-1];
 
   modport self(
       output coeff_ready,
@@ -29,8 +29,8 @@ interface Idct4x4If;
 endinterface
 
 module Idct4x4 (
-    input var logic clk,
-    input var logic rst,
+    input logic clk,
+    input logic rst,
 
     Idct4x4If.self self
 );
@@ -90,10 +90,10 @@ module Idct4x4 (
           t4 = (signed'(int'(self.block[3][i])) * sinpi8sqrt2) >>> 16;
           d1 = t3 + t4;
 
-          self.block[0][i] <= signed'(shortint'((a1 + d1)));
-          self.block[1][i] <= signed'(shortint'((b1 + c1)));
-          self.block[3][i] <= signed'(shortint'((a1 - d1)));
-          self.block[2][i] <= signed'(shortint'((b1 - c1)));
+          self.block[0][i] <= 16'((a1 + d1));
+          self.block[1][i] <= 16'((b1 + c1));
+          self.block[3][i] <= 16'((a1 - d1));
+          self.block[2][i] <= 16'((b1 - c1));
         end
         State_calc_rows: begin
           int signed a1;
@@ -120,10 +120,10 @@ module Idct4x4 (
           t4 = (signed'(int'(self.block[i][3])) * sinpi8sqrt2) >>> 16;
           d1 = t3 + t4;
 
-          self.block[i][0] <= signed'(shortint'(((a1 + d1 + 4) >>> 3)));
-          self.block[i][3] <= signed'(shortint'(((a1 - d1 + 4) >>> 3)));
-          self.block[i][1] <= signed'(shortint'(((b1 + c1 + 4) >>> 3)));
-          self.block[i][2] <= signed'(shortint'(((b1 - c1 + 4) >>> 3)));
+          self.block[i][0] <= 16'(((a1 + d1 + 4) >>> 3));
+          self.block[i][3] <= 16'(((a1 - d1 + 4) >>> 3));
+          self.block[i][1] <= 16'(((b1 + c1 + 4) >>> 3));
+          self.block[i][2] <= 16'(((b1 - c1 + 4) >>> 3));
         end
 
         State_out: begin
@@ -154,8 +154,8 @@ module Idct4x4 (
 endmodule
 
 module Iwht4x4 (
-    input var logic clk,
-    input var logic rst,
+    input logic clk,
+    input logic rst,
 
     Idct4x4If.self self
 );
@@ -201,10 +201,10 @@ module Iwht4x4 (
           c1 = signed'(int'(self.block[1][i])) - signed'(int'(self.block[2][i]));
           d1 = signed'(int'(self.block[0][i])) - signed'(int'(self.block[3][i]));
 
-          self.block[0][i] <= signed'(shortint'((a1 + b1)));
-          self.block[1][i] <= signed'(shortint'((c1 + d1)));
-          self.block[2][i] <= signed'(shortint'((a1 - b1)));
-          self.block[3][i] <= signed'(shortint'((d1 - c1)));
+          self.block[0][i] <= 16'((a1 + b1));
+          self.block[1][i] <= 16'((c1 + d1));
+          self.block[2][i] <= 16'((a1 - b1));
+          self.block[3][i] <= 16'((d1 - c1));
         end
         State_calc_rows: begin
           int signed a1;
@@ -230,10 +230,10 @@ module Iwht4x4 (
           c2 = a1 - b1;
           d2 = d1 - c1;
 
-          self.block[i][0] <= signed'(shortint'(((a2 + 3) >>> 3)));
-          self.block[i][1] <= signed'(shortint'(((b2 + 3) >>> 3)));
-          self.block[i][2] <= signed'(shortint'(((c2 + 3) >>> 3)));
-          self.block[i][3] <= signed'(shortint'(((d2 + 3) >>> 3)));
+          self.block[i][0] <= 16'(((a2 + 3) >>> 3));
+          self.block[i][1] <= 16'(((b2 + 3) >>> 3));
+          self.block[i][2] <= 16'(((c2 + 3) >>> 3));
+          self.block[i][3] <= 16'(((d2 + 3) >>> 3));
         end
 
         State_out: begin

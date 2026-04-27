@@ -13,11 +13,11 @@ module HeaderParser (
     input var Macroblock::Header above_header,
     input var logic              above_valid,
 
-    input var  byte unsigned      x,
-    input var  byte unsigned      y,
-    output var Macroblock::Header header,
-    output var logic              valid,
-    input var  logic              ready
+    input      logic              [7:0] x,
+    input      logic              [7:0] y,
+    output     Macroblock::Header       header,
+    output var logic                    valid,
+    input var  logic                    ready
 );
 
   // mb_to_bmode: convert a non-BPred MB mode to an equivalent IntraBMode
@@ -56,9 +56,9 @@ module HeaderParser (
   Macroblock::IntraBMode       ctx_l;
 
   // prob_for_node lookup
-  function automatic byte unsigned prob_for_node(input State s, input logic signed [7:0] node,
-                                                 input Macroblock::IntraBMode above,
-                                                 input Macroblock::IntraBMode left);
+  function automatic logic [7:0] prob_for_node(input State s, input logic signed [7:0] node,
+                                               input Macroblock::IntraBMode above,
+                                               input Macroblock::IntraBMode left);
 
     logic [1:0] ymode_idx;
     logic [1:0] uvmode_idx;
@@ -69,10 +69,11 @@ module HeaderParser (
     bmode_idx  = 4'(node[4:0] >> 1);
 
     case (s)
-      S_WALK_YMODE:  prob_for_node = KF_YMODE_PROB[ymode_idx];
+      S_WALK_YMODE: prob_for_node = KF_YMODE_PROB[ymode_idx];
       S_WALK_UVMODE: prob_for_node = KF_UV_MODE_PROB[uvmode_idx];
-      S_WALK_BMODE:  prob_for_node = Tables::KF_BMODE_PROB[above][left][bmode_idx];
-      default:       prob_for_node = 8'd128;
+      S_WALK_BMODE:
+      prob_for_node = Tables::KF_BMODE_PROB_FLAT[int'(above)*90+int'(left)*9+int'(bmode_idx)];
+      default: prob_for_node = 8'd128;
     endcase
   endfunction
 
@@ -144,7 +145,7 @@ module HeaderParser (
         // ymode tree walk KF_YMODE_TREE / KF_YMODE_PROB
         S_WALK_YMODE: begin
           if (bd.data_valid && bd_req_pend) begin
-            automatic byte signed child;
+            automatic logic signed [7:0] child;
             child = KF_YMODE_TREE[tree_node[2:0]+{2'b0, bd.data}];
             if (child <= 0) begin
               header.intra_y_mode <= Macroblock::IntraMBMode'(-child);
@@ -196,10 +197,10 @@ module HeaderParser (
           state     <= S_WALK_BMODE;
         end
 
-        // bmode tree walk BMODE_TREE / KF_BMODE_PROB[ctx_a][ctx_l]
+        // bmode tree walk BMODE_TREE / KF_BMODE_PROB_FLAT
         S_WALK_BMODE: begin
           if (bd.data_valid && bd_req_pend) begin
-            automatic byte signed child;
+            automatic logic signed [7:0] child;
             child = BMODE_TREE[tree_node[4:0]+{4'b0, bd.data}];
             if (child <= 0) begin
               // Leaf reached store decoded sub-mode
@@ -229,7 +230,7 @@ module HeaderParser (
         // uvmode tree walk UV_MODE_TREE / KF_UV_MODE_PROB
         S_WALK_UVMODE: begin
           if (bd.data_valid && bd_req_pend) begin
-            automatic byte signed child;
+            automatic logic signed [7:0] child;
             child = UV_MODE_TREE[tree_node[2:0]+{2'b0, bd.data}];
             if (child <= 0) begin
               header.intra_uv_mode <= Macroblock::IntraMBMode'(-child);
@@ -290,9 +291,9 @@ module MacroblockParserTest (
     input var logic [71:0] above_header,
     input var logic        above_valid,
 
-    input var byte unsigned x,
-    input var byte unsigned y,
-    input var logic         parser_ready,
+    input logic [7:0] x,
+    input logic [7:0] y,
+    input logic       parser_ready,
 
     output var logic       header_valid,
     output var logic       header_mb_skip_coeff,
@@ -335,7 +336,7 @@ module MacroblockParserTest (
     frame_ctx.uvac             = signed'(frame_ctx_uvac);
     frame_ctx.mb_no_skip_coeff = frame_ctx_mb_no_skip_coeff;
     frame_ctx.prob_skip_false  = frame_ctx_prob_skip_false;
-    frame_ctx.coeff_probs      = Tables::DEFAULT_COEFF_PROBS;
+    frame_ctx.coeff_probs      = Tables::DEFAULT_COEFF_PROBS_FLAT;
   end
 
   Macroblock::Header left_hdr_s;

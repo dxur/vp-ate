@@ -5,41 +5,41 @@ module FrameBuffer #(
     input var logic clk,
     input var logic rst,
 
-    input var shortint unsigned width,
-    input var shortint unsigned height,
+    input var logic [15:0] width,
+    input var logic [15:0] height,
 
-    input var  logic         wr_valid,
-    output var logic         wr_ready,
-    input var  byte unsigned wr_mb_col,              // macroblock column index
-    input var  byte unsigned wr_mb_row,              // macroblock row index
-    input var  byte unsigned wr_y     [0:15][0:15],
-    input var  byte unsigned wr_cb    [ 0:7][ 0:7],
-    input var  byte unsigned wr_cr    [ 0:7][ 0:7],
+    input var  logic       wr_valid,
+    output var logic       wr_ready,
+    input var  logic [7:0] wr_mb_col,              // macroblock column index
+    input var  logic [7:0] wr_mb_row,              // macroblock row index
+    input var  logic [7:0] wr_y     [0:15][0:15],
+    input var  logic [7:0] wr_cb    [ 0:7][ 0:7],
+    input var  logic [7:0] wr_cr    [ 0:7][ 0:7],
 
-    input var  byte unsigned rd_mb_col,
-    input var  byte unsigned rd_mb_row,
-    output var byte unsigned rd_top_y         [0:15],
-    output var byte unsigned rd_top_cb        [ 0:7],
-    output var byte unsigned rd_top_cr        [ 0:7],
-    output var byte unsigned rd_left_y        [0:15],
-    output var byte unsigned rd_left_cb       [ 0:7],
-    output var byte unsigned rd_left_cr       [ 0:7],
-    output var byte unsigned rd_topleft_y,
-    output var byte unsigned rd_topleft_cb,
-    output var byte unsigned rd_topleft_cr,
-    output var byte unsigned rd_topright_y    [ 0:3],
-    output var logic         rd_top_valid,
-    output var logic         rd_left_valid,
-    output var logic         rd_topleft_valid,
-    output var logic         rd_topright_valid
+    input var  logic [7:0] rd_mb_col,
+    input var  logic [7:0] rd_mb_row,
+    output var logic [7:0] rd_top_y         [0:15],
+    output var logic [7:0] rd_top_cb        [ 0:7],
+    output var logic [7:0] rd_top_cr        [ 0:7],
+    output var logic [7:0] rd_left_y        [0:15],
+    output var logic [7:0] rd_left_cb       [ 0:7],
+    output var logic [7:0] rd_left_cr       [ 0:7],
+    output var logic [7:0] rd_topleft_y,
+    output var logic [7:0] rd_topleft_cb,
+    output var logic [7:0] rd_topleft_cr,
+    output var logic [7:0] rd_topright_y    [ 0:3],
+    output var logic       rd_top_valid,
+    output var logic       rd_left_valid,
+    output var logic       rd_topleft_valid,
+    output var logic       rd_topright_valid
 );
 
   localparam int unsigned LUMA_SIZE = MAX_WIDTH * MAX_HEIGHT;
   localparam int unsigned CHROMA_SIZE = (MAX_WIDTH / 2) * (MAX_HEIGHT / 2);
 
-  byte unsigned luma_buf[  0:LUMA_SIZE-1];
-  byte unsigned cb_buf  [0:CHROMA_SIZE-1];
-  byte unsigned cr_buf  [0:CHROMA_SIZE-1];
+  logic [7:0] luma_buf[  0:LUMA_SIZE-1];
+  logic [7:0] cb_buf  [0:CHROMA_SIZE-1];
+  logic [7:0] cr_buf  [0:CHROMA_SIZE-1];
 
   always_comb wr_ready = 1'b1;
 

@@ -4,22 +4,22 @@ module SimpleFifo #(
     input var logic clk,
     input var logic rst,
 
-    input var  byte unsigned wr_data,
-    input var  logic         wr_valid,
-    output var logic         wr_ready,
+    input var  logic [7:0] wr_data,
+    input var  logic       wr_valid,
+    output var logic       wr_ready,
 
-    output var byte unsigned rd_data,
-    output var logic         rd_valid,
-    input var  logic         rd_ready,
+    output var logic [7:0] rd_data,
+    output var logic       rd_valid,
+    input var  logic       rd_ready,
 
     output var logic [$clog2(DEPTH):0] fill
 );
   localparam int unsigned AW = $clog2(DEPTH);
 
-  byte unsigned          mem    [0:DEPTH-1];
-  logic         [AW-1:0] wr_ptr;
-  logic         [AW-1:0] rd_ptr;
-  logic         [  AW:0] count;
+  logic [   7:0] mem    [0:DEPTH-1];
+  logic [AW-1:0] wr_ptr;
+  logic [AW-1:0] rd_ptr;
+  logic [  AW:0] count;
 
   assign fill     = count;
   assign wr_ready = (count < DEPTH[AW:0]);
@@ -69,17 +69,17 @@ module VpAte #(
     input var logic clk,
     input var logic rst,
 
-    input var  byte unsigned p0_data,
-    input var  logic         p0_valid,
-    output var logic         p0_ready,
+    input var  logic [7:0] p0_data,
+    input var  logic       p0_valid,
+    output var logic       p0_ready,
 
-    input var  byte unsigned p1_data,
-    input var  logic         p1_valid,
-    output var logic         p1_ready,
+    input var  logic [7:0] p1_data,
+    input var  logic       p1_valid,
+    output var logic       p1_ready,
 
-    output var logic             frame_done,
-    output var shortint unsigned frame_width,
-    output var shortint unsigned frame_height
+    output var logic        frame_done,
+    output var logic [15:0] frame_width,
+    output var logic [15:0] frame_height
 );
 
   localparam int unsigned MAX_MB_COLS = MAX_WIDTH / 16;
@@ -87,13 +87,13 @@ module VpAte #(
 
   // Sticky bit: set when mb_valid_r fires for the last MB.
   // Permanently blocks mb_header_ready so MBHP never handshakes again.
-  logic                                   last_mb_accepted;
+  logic                           last_mb_accepted;
 
   // FIFOs
-  byte unsigned                           p0_rd_data;
-  logic                                   p0_rd_valid;
-  logic                                   p0_rd_ready;
-  logic         [$clog2(P0_FIFO_DEPTH):0] p0_fill;
+  logic [                    7:0] p0_rd_data;
+  logic                           p0_rd_valid;
+  logic                           p0_rd_ready;
+  logic [$clog2(P0_FIFO_DEPTH):0] p0_fill;
 
   SimpleFifo #(
       .DEPTH(P0_FIFO_DEPTH)
@@ -109,10 +109,10 @@ module VpAte #(
       .fill    (p0_fill)
   );
 
-  byte unsigned                           p1_rd_data;
-  logic                                   p1_rd_valid;
-  logic                                   p1_rd_ready;
-  logic         [$clog2(P1_FIFO_DEPTH):0] p1_fill;
+  logic [                    7:0] p1_rd_data;
+  logic                           p1_rd_valid;
+  logic                           p1_rd_ready;
+  logic [$clog2(P1_FIFO_DEPTH):0] p1_fill;
 
   SimpleFifo #(
       .DEPTH(P1_FIFO_DEPTH)
@@ -209,16 +209,16 @@ module VpAte #(
   );
 
   // Macroblock Header Parser
-  Macroblock::Header mb_header;
-  logic              mb_header_valid;
-  logic              mb_header_ready;
+  Macroblock::Header       mb_header;
+  logic                    mb_header_valid;
+  logic                    mb_header_ready;
 
-  Macroblock::Header left_hdr;
-  Macroblock::Header above_hdr       [0:MAX_MB_COLS-1];
-  logic              left_valid;
-  logic              above_valid;
-  byte unsigned      mb_col;
-  byte unsigned      mb_row;
+  Macroblock::Header       left_hdr;
+  Macroblock::Header       above_hdr       [0:MAX_MB_COLS-1];
+  logic                    left_valid;
+  logic                    above_valid;
+  logic              [7:0] mb_col;
+  logic              [7:0] mb_row;
 
   HeaderParser u_mbhp (
       .clk         (clk),
@@ -250,7 +250,7 @@ module VpAte #(
     end else if (mb_header_valid && mb_header_ready) begin
       above_hdr[7'(mb_col)] <= mb_header;
       left_hdr              <= mb_header;
-      if (mb_col == byte'(frame_ctx.mb_width) - 1) begin
+      if (mb_col == 8'(frame_ctx.mb_width) - 1) begin
         mb_col      <= 8'd0;
         mb_row      <= mb_row + 1'b1;
         left_valid  <= 1'b0;
@@ -264,14 +264,14 @@ module VpAte #(
   end
 
   // has_coeff context
-  logic         [8:0] hc_top_arr     [0:MAX_MB_COLS-1];
-  logic         [8:0] hc_left_reg;
-  logic         [8:0] hc_left_out;
-  logic         [8:0] hc_top_out;
-  logic         [8:0] hc_top_latched;
+  logic [8:0] hc_top_arr     [0:MAX_MB_COLS-1];
+  logic [8:0] hc_left_reg;
+  logic [8:0] hc_left_out;
+  logic [8:0] hc_top_out;
+  logic [8:0] hc_top_latched;
 
-  byte unsigned       res_mb_col;
-  byte unsigned       res_mb_row;
+  logic [7:0] res_mb_col;
+  logic [7:0] res_mb_row;
 
   always_ff @(posedge clk or negedge rst) begin
     if (!rst) begin
@@ -295,16 +295,16 @@ module VpAte #(
   end
 
   // Token Decoder
-  logic           [1:0] td_plane;
-  logic           [1:0] td_complexity;
-  logic                 td_first_coeff;
-  shortint signed       td_dcq;
-  shortint signed       td_acq;
-  logic                 td_start;
-  logic                 td_busy;
-  shortint signed       td_coeffs      [0:15];
-  logic                 td_has_coeff;
-  logic                 td_coeff_valid;
+  logic        [ 1:0] td_plane;
+  logic        [ 1:0] td_complexity;
+  logic               td_first_coeff;
+  logic signed [15:0] td_dcq;
+  logic signed [15:0] td_acq;
+  logic               td_start;
+  logic               td_busy;
+  logic signed [15:0] td_coeffs      [0:15];
+  logic               td_has_coeff;
+  logic               td_coeff_valid;
 
   TokenDecoder u_tokdec (
       .clk        (clk),
@@ -338,13 +338,13 @@ module VpAte #(
       .self(wht_bus)
   );
 
-  logic           use_wht;
-  logic           idct_coeff_valid;
-  logic           idct_coeff_ready;
-  shortint signed idct_coeff       [0:3][0:3];
-  logic           idct_block_valid;
-  logic           idct_block_ready;
-  shortint signed idct_block       [0:3][0:3];
+  logic               use_wht;
+  logic               idct_coeff_valid;
+  logic               idct_coeff_ready;
+  logic signed [15:0] idct_coeff       [0:3][0:3];
+  logic               idct_block_valid;
+  logic               idct_block_ready;
+  logic signed [15:0] idct_block       [0:3][0:3];
 
   always_comb begin
     idct_bus.coeff_valid = idct_coeff_valid & ~use_wht;
@@ -412,10 +412,10 @@ module VpAte #(
   );
 
   // Frame Buffer + Predictor
-  byte unsigned fb_top_y[0:15], fb_top_cb[0:7], fb_top_cr[0:7];
-  byte unsigned fb_left_y[0:15], fb_left_cb[0:7], fb_left_cr[0:7];
-  byte unsigned fb_tl_y, fb_tl_cb, fb_tl_cr;
-  byte unsigned fb_tr_y[0:3];
+  logic [7:0] fb_top_y[0:15], fb_top_cb[0:7], fb_top_cr[0:7];
+  logic [7:0] fb_left_y[0:15], fb_left_cb[0:7], fb_left_cr[0:7];
+  logic [7:0] fb_tl_y, fb_tl_cb, fb_tl_cr;
+  logic [7:0] fb_tr_y[0:3];
   logic fb_top_v, fb_left_v, fb_tl_v, fb_tr_v;
 
   PredictorPkg::MbPixels mb_pixels;
@@ -476,20 +476,21 @@ module VpAte #(
   // frame_done
   always_comb begin
     frame_done = res_valid
-              && (res_mb_row == byte'(int'(frame_ctx.mb_height) - 1))
-              && (res_mb_col == byte'(int'(frame_ctx.mb_width)  - 1));
+              && (res_mb_row == 8'(int'(frame_ctx.mb_height) - 1))
+              && (res_mb_col == 8'(int'(frame_ctx.mb_width)  - 1));
   end
 
   // signal stop at frame boundery so mbh dont consume extra bits from bd0
   always_ff @(posedge clk or negedge rst) begin
     if (!rst) last_mb_accepted <= 1'b0;
     else if (mb_valid_r
-             && (mb_row == byte'(int'(frame_ctx.mb_height) - 1))
-             && (mb_col == byte'(int'(frame_ctx.mb_width)  - 1)))
+             && (mb_row == 8'(int'(frame_ctx.mb_height) - 1))
+             && (mb_col == 8'(int'(frame_ctx.mb_width)  - 1)))
       last_mb_accepted <= 1'b1;
   end
 
 endmodule
+
 
 // Test wrapper
 module VpAteTest (
@@ -497,18 +498,18 @@ module VpAteTest (
     input var logic rst,
 
     // Partition streams
-    input var  byte unsigned p0_data,
-    input var  logic         p0_valid,
-    output var logic         p0_ready,
+    input var  logic [7:0] p0_data,
+    input var  logic       p0_valid,
+    output var logic       p0_ready,
 
-    input var  byte unsigned p1_data,
-    input var  logic         p1_valid,
-    output var logic         p1_ready,
+    input var  logic [7:0] p1_data,
+    input var  logic       p1_valid,
+    output var logic       p1_ready,
 
     // Frame outputs
-    output var logic             frame_done,
-    output var shortint unsigned frame_width,
-    output var shortint unsigned frame_height,
+    output var logic        frame_done,
+    output var logic [15:0] frame_width,
+    output var logic [15:0] frame_height,
 
     // Diagnostic
     output var logic [ 5:0] fhp_state,

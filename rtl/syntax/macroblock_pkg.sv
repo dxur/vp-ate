@@ -30,52 +30,52 @@ package Macroblock;
     IntraMBMode intra_uv_mode;
   } Header;
 
-  localparam byte unsigned KF_YMODE_PROB[0:4-1] = '{145, 156, 163, 128};
-  localparam byte unsigned KF_UV_MODE_PROB[0:3-1] = '{142, 114, 183};
+  localparam logic [7:0] KF_YMODE_PROB[0:4-1] = '{145, 156, 163, 128};
+  localparam logic [7:0] KF_UV_MODE_PROB[0:3-1] = '{142, 114, 183};
 
   // Trees are represented as flat arrays
   // postive values are offsets to the next node
   // negative values are the leaf values (modes)
   // we use 8 bits signed integers
-  localparam byte signed KF_YMODE_TREE[0:8-1] = '{
-      -(signed'(byte'(IntraMBMode_BPred))),
+  localparam logic signed [7:0] KF_YMODE_TREE[0:8-1] = '{
+      -(signed'(8'(IntraMBMode_BPred))),
       2,
       4,
       6,
-      -(signed'(byte'(IntraMBMode_DcPred))),
-      -(signed'(byte'(IntraMBMode_VPred))),
-      -(signed'(byte'(IntraMBMode_HPred))),
-      -(signed'(byte'(IntraMBMode_TmPred)))
+      -(signed'(8'(IntraMBMode_DcPred))),
+      -(signed'(8'(IntraMBMode_VPred))),
+      -(signed'(8'(IntraMBMode_HPred))),
+      -(signed'(8'(IntraMBMode_TmPred)))
   };
 
-  localparam byte signed UV_MODE_TREE[0:6-1] = '{
-      -(signed'(byte'(IntraMBMode_DcPred))),
+  localparam logic signed [7:0] UV_MODE_TREE[0:6-1] = '{
+      -(signed'(8'(IntraMBMode_DcPred))),
       2,
-      -(signed'(byte'(IntraMBMode_VPred))),
+      -(signed'(8'(IntraMBMode_VPred))),
       4,
-      -(signed'(byte'(IntraMBMode_HPred))),
-      -(signed'(byte'(IntraMBMode_TmPred)))
+      -(signed'(8'(IntraMBMode_HPred))),
+      -(signed'(8'(IntraMBMode_TmPred)))
   };
 
-  localparam byte signed BMODE_TREE[0:18-1] = '{
-      -(signed'(byte'(IntraBMode_BDcPred))),
+  localparam logic signed [7:0] BMODE_TREE[0:18-1] = '{
+      -(signed'(8'(IntraBMode_BDcPred))),
       2,
-      -(signed'(byte'(IntraBMode_BTmPred))),
+      -(signed'(8'(IntraBMode_BTmPred))),
       4,
-      -(signed'(byte'(IntraBMode_BVePred))),
+      -(signed'(8'(IntraBMode_BVePred))),
       6,
       8,
       12,
-      -(signed'(byte'(IntraBMode_BHePred))),
+      -(signed'(8'(IntraBMode_BHePred))),
       10,
-      -(signed'(byte'(IntraBMode_BRdPred))),
-      -(signed'(byte'(IntraBMode_BVrPred))),
-      -(signed'(byte'(IntraBMode_BLdPred))),
+      -(signed'(8'(IntraBMode_BRdPred))),
+      -(signed'(8'(IntraBMode_BVrPred))),
+      -(signed'(8'(IntraBMode_BLdPred))),
       14,
-      -(signed'(byte'(IntraBMode_BVlPred))),
+      -(signed'(8'(IntraBMode_BVlPred))),
       16,
-      -(signed'(byte'(IntraBMode_BHdPred))),
-      -(signed'(byte'(IntraBMode_BHuPred)))
+      -(signed'(8'(IntraBMode_BHdPred))),
+      -(signed'(8'(IntraBMode_BHuPred)))
   };
 
 endpackage
